@@ -54,20 +54,59 @@ export function SiteControls() {
             </div>
           )}
 
+          {/* Zoning Boundary Jurisdiction Status */}
+          {state.polygon.length >= 3 && (
+            state.isInsideZoneYor9 ? (
+              <div
+                data-testid="in-zone-badge"
+                className="bg-emerald-950/40 border border-emerald-500/40 rounded-xl p-2.5 text-xs flex items-center justify-between"
+              >
+                <div className="flex items-center gap-1.5 text-emerald-300 font-medium text-[11px]">
+                  <span>✓</span>
+                  <span>Zone Yor.9 Jurisdiction Verified</span>
+                </div>
+                <span className="text-[10px] text-emerald-400/80 font-mono">B.E. 2556</span>
+              </div>
+            ) : (
+              <div
+                data-testid="out-of-zone-warning"
+                className="bg-red-500/15 border border-red-500/50 rounded-xl p-3 text-xs flex flex-col gap-1 shadow-lg"
+              >
+                <div className="font-semibold text-red-400 flex items-center gap-1.5 text-[11px]">
+                  <span>🚫</span> Outside Zone Yor.9 Jurisdiction
+                </div>
+                <div className="text-[10px] text-red-200/90 leading-relaxed">
+                  {state.zoneMessage || 'Plot lies outside the Bangkok B.E. 2556 Zone Yor.9 boundary.'}
+                </div>
+                <div className="text-[9px] text-red-400/80 mt-0.5">
+                  Statutory Note: Zone Yor.9 rules (FAR 7.0, OSR 4.5%) cannot be legally applied to parcels outside the designated Sukhumvit/Thonglor/Phrom Phong brown zone.
+                </div>
+              </div>
+            )
+          )}
+
           {/* Road Encroachment Advisory Warning */}
           {state.roadEncroachment && (
             <div
               data-testid="road-encroachment-warning"
-              className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 text-xs flex flex-col gap-1 shadow-lg"
+              className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 text-xs flex flex-col gap-1.5 shadow-lg"
             >
-              <div className="font-semibold text-amber-400 flex items-center gap-1.5 text-[11px]">
-                <span>⚠️</span> Public Road Right-of-Way Advisory
+              <div className="font-semibold text-amber-400 flex items-center justify-between text-[11px]">
+                <span className="flex items-center gap-1.5">
+                  <span>⚠️</span> Public Road Right-of-Way Advisory
+                </span>
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono">
+                  {state.roadEncroachment.type === 'centerline_intersection' ? 'Centerline Cross' : 'Corridor Buffer'}
+                </span>
               </div>
               <div className="text-[10px] text-amber-200/90 leading-relaxed">
-                Plot boundary intersects mapped road centerline ({state.roadEncroachment.roadName || 'Soi / Street'}). Under Building Control Act Sec. 41, building footprints must not encroach on public rights-of-way.
+                {state.roadEncroachment.description}
               </div>
-              <div className="text-[9px] text-amber-400/70 mt-0.5 italic">
-                Note: OpenStreetMap street lines are indicative urban context, not legally certified cadastral parcel surveys.
+              <div className="text-[9px] text-amber-300/80 leading-normal border-t border-amber-500/20 pt-1">
+                <strong>Statutory Reference:</strong> {state.roadEncroachment.legalReference}
+              </div>
+              <div className="text-[9px] text-amber-400/70 italic">
+                {state.roadEncroachment.cadastralDisclaimer}
               </div>
             </div>
           )}

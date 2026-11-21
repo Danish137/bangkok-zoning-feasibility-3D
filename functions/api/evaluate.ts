@@ -62,6 +62,7 @@ export const onRequestPost: PagesFunction = async ({ request }) => {
       edges,
       buildingType: body.buildingType as BuildingType,
       roadWidths: new Map(body.roadEdges.map(i => [i, body.roadWidth])),
+      polygonLngLat: body.polygon,
     };
 
     const evaluation = evaluate(input);

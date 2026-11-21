@@ -5,8 +5,8 @@ import * as THREE from 'three';
 import { useAppState, useAppDispatch } from '../state';
 import { anchorAtCentroid, polygonToMetric, toLngLat } from '../engine/geo';
 import { ensureCCW, polygonArea, edgeInwardNormal, edgeLength } from '../engine/polygon';
-import type { LngLat, LngLatPolygon, Polygon } from '../engine/types';
-import { ZONE_YOR9 } from '../engine/types';
+import type { LngLat, LngLatPolygon, Polygon, RoadAdvisory } from '../engine/types';
+import { ZONE_YOR9, ZONE_YOR9_BOUNDARY } from '../engine/types';
 
 // High-reliability Vector & Raster Tile Styles
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
@@ -147,6 +147,46 @@ export function MapContainer() {
         }
       } catch (err) {
         console.debug('3D building extrusion setup:', err);
+      }
+
+      // Add Zone Yor.9 Official Boundary Layer (Bangkok Comprehensive Plan B.E. 2556)
+      try {
+        const closedBoundary = [...ZONE_YOR9_BOUNDARY, ZONE_YOR9_BOUNDARY[0]!];
+        map.addSource('yor9-boundary-source', {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            properties: { name: 'Zone Yor.9 (High-Density Residential, Brown Zone)' },
+            geometry: {
+              type: 'Polygon',
+              coordinates: [closedBoundary],
+            },
+          },
+        });
+
+        map.addLayer({
+          id: 'yor9-boundary-fill',
+          type: 'fill',
+          source: 'yor9-boundary-source',
+          paint: {
+            'fill-color': '#d97706',
+            'fill-opacity': 0.05,
+          },
+        });
+
+        map.addLayer({
+          id: 'yor9-boundary-line',
+          type: 'line',
+          source: 'yor9-boundary-source',
+          paint: {
+            'line-color': '#d97706',
+            'line-width': 2,
+            'line-dasharray': [3, 2],
+            'line-opacity': 0.75,
+          },
+        });
+      } catch (err) {
+        console.debug('Yor.9 boundary layer setup:', err);
       }
 
       // Shared WebGL2 Custom Layer for Three.js
@@ -717,9 +757,18 @@ export function MapContainer() {
         }
 
         if (count > 0) {
+          const street = encroachingRoad || 'Mapped Street';
+          const advisory: RoadAdvisory = {
+            type: 'centerline_intersection',
+            roadName: street,
+            count,
+            description: `Drawn plot boundary directly crosses the mapped street centerline of ${street}. A public roadway alignment must not bisect or encroach on private deed parcels.`,
+            legalReference: 'MR 55 Clause 40 (prohibits structures or parts of buildings from protruding into or over public roads/spaces) & Clause 41 (regulates statutory setbacks from road boundaries).',
+            cadastralDisclaimer: 'Note: OpenStreetMap road geometry represents indicative urban navigation centerlines, not certified cadastral parcel surveys (Chanote) from the Department of Lands.',
+          };
           dispatch({
             type: 'SET_ROAD_ENCROACHMENT',
-            encroachment: { roadName: encroachingRoad || 'Mapped Street', count },
+            encroachment: advisory,
           });
         } else if (stateRef.current.roadEncroachment !== null) {
           dispatch({ type: 'SET_ROAD_ENCROACHMENT', encroachment: null });

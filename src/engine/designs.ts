@@ -7,7 +7,7 @@ import type {
   FloorResult, ComplianceCheck, ZoningInput,
 } from './types';
 import { BUILDING_TYPES, ZONE_YOR9 } from './types';
-import { polygonArea, ensureCCW, edgeLength } from './polygon';
+import { polygonArea, ensureCCW, edgeLength, isPlotInZoneYor9 } from './polygon';
 import { generateFloors, checkRoadEligibility, computeCompliance } from './rules';
 
 /** Generate Design A: Maximum Yield Envelope */
@@ -22,12 +22,12 @@ export function generateDesignA(input: ZoningInput): DesignResult {
   return buildDesignResult(
     'max-yield',
     'Design A: Max-Yield Envelope',
-    'Maximizes permissible GFA within FAR 7.0, OSR, statutory setbacks, and 2:1 sky exposure plane.',
+    'Maximizes permissible GFA within FAR 7.0, statutory setbacks, and MR 55 Clause 44 2:1 sky exposure plane.',
     floors, polygon, plotArea, input,
   );
 }
 
-/** Generate Design B: Podium + Slender Tower OR Sub-EIA Courtyard Block */
+/** Generate Design B: Podium + Slender Tower OR Sub-EIA Courtyard Block (Open Space Optimized) */
 export function generateDesignB(input: ZoningInput): DesignResult {
   const polygon = ensureCCW(input.polygon);
   const plotArea = polygonArea(polygon);
@@ -35,7 +35,7 @@ export function generateDesignB(input: ZoningInput): DesignResult {
   const roadElig = checkRoadEligibility(input.edges, plotArea);
 
   if (roadElig.highRiseAllowed && !config.maxHeightCap) {
-    // ── High-Rise Scenario: Podium + Slender Tower ──
+    // ── High-Rise Scenario: Podium + Slender Tower (Open Space Optimized) ──
     // Floors 0 to 2: Podium base (retail / parking / amenities)
     // Floors 3+: Slender tower inset by an extra 4m from all edges for light, ventilation, and rooftop terraces
     const targetGFA = Math.min(roadElig.maxGFA, plotArea * ZONE_YOR9.maxFAR) * 0.78;
@@ -48,12 +48,12 @@ export function generateDesignB(input: ZoningInput): DesignResult {
     
     return buildDesignResult(
       'podium-tower',
-      'Design B: Podium + Slender Tower',
-      'Leaves generous landscaped open space above statutory OSR. Uses a 3-storey podium with an inset slender tower for daylight, cross-ventilation, and rooftop terrace.',
+      'Design B: Podium + Slender Tower (Open Space Optimized)',
+      'Optimizes usable open space (exceeding statutory 30% OSR) via a 3-storey podium with an inset slender tower (4m extra setback) for natural ventilation, daylight, and landscaped terraces.',
       floors, polygon, plotArea, input,
     );
   } else {
-    // ── Low-Rise / Narrow-Soi Scenario: Sub-EIA Courtyard Block ──
+    // ── Low-Rise / Narrow-Soi Scenario: Sub-EIA Courtyard Block (Open Space Optimized) ──
     // Keeps residential units below 80 and height <= 23m to bypass costly EIA review
     const maxUnits = 79;
     const maxUsableGFA = (maxUnits * 40) / 0.7; // ~4,514 sqm GFA cap for 79 units
@@ -68,8 +68,8 @@ export function generateDesignB(input: ZoningInput): DesignResult {
 
     return buildDesignResult(
       'sub-eia',
-      'Design B: Sub-EIA Courtyard Block',
-      'Fast-track permitting design: strictly caps estimated units at 79 and height at 23m to remain EIA-exempt. Features generous courtyard garden setbacks.',
+      'Design B: Sub-EIA Courtyard (Open Space Optimized)',
+      'Optimizes ground open space with a 2m extra courtyard garden setback while capping units at 79 and height at 23m for fast-track EIA-exempt permitting.',
       floors, polygon, plotArea, input,
     );
   }
@@ -98,7 +98,8 @@ function buildDesignResult(
   const eiaRequired = (isResidential && height > 23) || estimatedUnits >= 80;
 
   const roadElig = checkRoadEligibility(input.edges, plotArea);
-  const checks = computeCompliance(plotArea, floors, input.edges, input.buildingType, roadElig);
+  const zoneCheck = isPlotInZoneYor9(input.polygonLngLat);
+  const checks = computeCompliance(plotArea, floors, input.edges, input.buildingType, roadElig, input.polygonLngLat);
 
   let limitingConstraint: string | undefined;
   if (actualFAR < ZONE_YOR9.maxFAR - 0.1) {
@@ -109,7 +110,7 @@ function buildDesignResult(
     } else if (roadElig.maxGFA < plotArea * ZONE_YOR9.maxFAR) {
       limitingConstraint = `Capped at FAR ${actualFAR.toFixed(2)} vs statutory max 7.0: Road width < 18m imposes a 30,000 m² GFA cap (MR 33).`;
     } else {
-      limitingConstraint = `FAR ${actualFAR.toFixed(2)} constrained by 2:1 sky exposure plane stepbacks (MR 55 Sec. 44) and statutory setbacks.`;
+      limitingConstraint = `FAR ${actualFAR.toFixed(2)} constrained by 2:1 sky exposure plane stepbacks (MR 55 Clause 44) and statutory setbacks.`;
     }
   }
 
@@ -132,6 +133,11 @@ function buildDesignResult(
       ? (height > 23 ? 'Residential building height > 23m' : `Estimated ${estimatedUnits} units ≥ 80 threshold`)
       : undefined,
     limitingConstraint,
+    zoneCheck: input.polygonLngLat ? {
+      inZone: zoneCheck.inZone,
+      outsideCount: zoneCheck.outsideCount,
+      message: zoneCheck.message,
+    } : undefined,
   };
 }
 

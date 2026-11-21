@@ -3,7 +3,8 @@
 // Uses polygon-clipping for robust boolean operations on concave shapes
 
 import polygonClipping from 'polygon-clipping';
-import type { MetricPoint, Polygon } from './types';
+import type { MetricPoint, Polygon, LngLat, LngLatPolygon } from './types';
+import { ZONE_YOR9_BOUNDARY } from './types';
 
 /** Signed area of polygon (positive = CCW, negative = CW) using Shoelace formula */
 export function signedArea(poly: Polygon): number {
@@ -311,4 +312,46 @@ export function pointInPolygon(point: MetricPoint, poly: Polygon): boolean {
     }
   }
   return inside;
+}
+
+/** Point-in-polygon test for WGS84 coordinates */
+export function isPointInLngLatPolygon(point: LngLat, poly: LngLatPolygon): boolean {
+  const [px, py] = point;
+  let inside = false;
+  const n = poly.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const [xi, yi] = poly[i]!;
+    const [xj, yj] = poly[j]!;
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Verify if all vertices of a WGS84 plot lie within the official Zone Yor.9 boundary */
+export function isPlotInZoneYor9(polygonLngLat?: LngLatPolygon): {
+  inZone: boolean;
+  checked: boolean;
+  outsideCount: number;
+  message: string;
+} {
+  if (!polygonLngLat || polygonLngLat.length === 0) {
+    return { inZone: true, checked: false, outsideCount: 0, message: 'No geographic coordinates provided (using metric mode)' };
+  }
+  const outside = polygonLngLat.filter((pt) => !isPointInLngLatPolygon(pt, ZONE_YOR9_BOUNDARY));
+  if (outside.length > 0) {
+    return {
+      inZone: false,
+      checked: true,
+      outsideCount: outside.length,
+      message: `Plot lies outside Bangkok Plan B.E. 2556 Zone Yor.9 boundary (${outside.length}/${polygonLngLat.length} vertices outside Sukhumvit/Thonglor Brown Zone).`,
+    };
+  }
+  return {
+    inZone: true,
+    checked: true,
+    outsideCount: 0,
+    message: 'All plot vertices verified within Zone Yor.9 (High-Density Residential, Brown Zone).',
+  };
 }

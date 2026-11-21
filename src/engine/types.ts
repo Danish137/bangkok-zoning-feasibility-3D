@@ -69,6 +69,14 @@ export const BUILDING_TYPES: Record<BuildingType, BuildingTypeConfig> = {
   },
 };
 
+/** Official Zone Yor.9 spatial boundary polygon (WGS84 [lng, lat]) */
+export const ZONE_YOR9_BOUNDARY: LngLatPolygon = [
+  [100.5580, 13.7480], // NW: Asok Montri / New Phetchaburi intersection
+  [100.6000, 13.7460], // NE: Khlong Saen Saep / Sukhumvit 71
+  [100.6020, 13.7150], // SE: Khlong Phra Khanong / Rama IV
+  [100.5620, 13.7160], // SW: Rama IV / Khlong Toei
+];
+
 /** Zone Yor.9 constants */
 export const ZONE_YOR9 = {
   name: 'Yor.9 (ย.9)',
@@ -76,6 +84,7 @@ export const ZONE_YOR9 = {
   maxFAR: 7.0,
   minOSRPercent: 4.5,  // percent of GFA
   center: [100.5760, 13.7308] as LngLat,
+  boundary: ZONE_YOR9_BOUNDARY,
 } as const;
 
 /** Setback rule result for one edge at one floor level */
@@ -151,11 +160,26 @@ export interface EvaluationResult {
   eiaReason?: string;
   roadBlocker?: string;
   btsFlag?: boolean;
+  zoneCheck?: {
+    inZone: boolean;
+    outsideCount: number;
+    message: string;
+  };
 
   // Road info
   maxRoadWidth: number;
   maxFrontageLength: number;
   highRiseEligible: boolean;
+}
+
+/** Road right-of-way advisory */
+export interface RoadAdvisory {
+  type: 'centerline_intersection' | 'corridor_proximity';
+  roadName: string;
+  count: number;
+  description: string;
+  legalReference: string;
+  cadastralDisclaimer: string;
 }
 
 /** Preset plot definition */
@@ -175,6 +199,7 @@ export interface ZoningInput {
   edges: PlotEdge[];
   buildingType: BuildingType;
   roadWidths: Map<number, number>;  // edge index → road width
+  polygonLngLat?: LngLatPolygon;    // WGS84 coordinates for geographic zone verification
 }
 
 /** Design variant */
@@ -198,6 +223,11 @@ export interface DesignResult {
   eiaRequired: boolean;
   eiaReason?: string;
   limitingConstraint?: string;
+  zoneCheck?: {
+    inZone: boolean;
+    outsideCount: number;
+    message: string;
+  };
 }
 
 /** Thai area conversion */

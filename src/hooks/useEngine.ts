@@ -41,6 +41,7 @@ export function useEngine() {
         roadWidths: new Map(
           state.roadEdges.map((i) => [i, state.roadWidth])
         ),
+        polygonLngLat: state.polygon,
       };
 
       const evaluationResult = evaluate(input);

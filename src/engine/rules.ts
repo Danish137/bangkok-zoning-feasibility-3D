@@ -5,13 +5,13 @@
 import type {
   Polygon, MetricPoint, PlotEdge, BuildingType, BuildingTypeConfig,
   EdgeSetback, SkyPlaneClip, FloorResult, ComplianceCheck, EvaluationResult,
-  ZoningInput,
+  ZoningInput, LngLatPolygon,
 } from './types';
 import { BUILDING_TYPES, ZONE_YOR9 } from './types';
 import { sqmToRaiNganWah } from './geo';
 import {
   polygonArea, ensureCCW, edgeLength, perEdgeInwardOffset, clipByHalfPlane,
-  edgeInwardNormal, polygonCentroid,
+  edgeInwardNormal, polygonCentroid, isPlotInZoneYor9,
 } from './polygon';
 
 // ─── Setback Computation ───
@@ -316,6 +316,7 @@ export function computeCompliance(
   edges: PlotEdge[],
   buildingType: BuildingType,
   roadEligibility: RoadEligibility,
+  polygonLngLat?: LngLatPolygon,
 ): ComplianceCheck[] {
   const config = BUILDING_TYPES[buildingType];
   const totalGFA = floors.reduce((sum, f) => sum + f.areaSqm, 0);
@@ -349,7 +350,24 @@ export function computeCompliance(
   const isHighRise = height > 23 || totalGFA >= 10000;
   const minRequiredRoadSetback = isHighRise ? 6 : (maxRoadWidth >= 20 ? 2 : Math.max(2, maxRoadWidth / 10));
 
-  const checks: ComplianceCheck[] = [
+  const zoneCheck = isPlotInZoneYor9(polygonLngLat);
+
+  const checks: ComplianceCheck[] = [];
+
+  // 0. Zoning Jurisdiction Check (if coordinates provided)
+  if (polygonLngLat && polygonLngLat.length > 0) {
+    checks.push({
+      rule: 'zoning-boundary',
+      label: 'Zone Yor.9 Jurisdiction',
+      actual: zoneCheck.inZone ? 'Verified In Zone' : `${zoneCheck.outsideCount} vertex outside`,
+      allowed: 'Inside Zone Yor.9',
+      unit: '',
+      pass: zoneCheck.inZone,
+      statutoryRef: 'Bangkok Comprehensive Plan B.E. 2556 (Zone Yor.9)',
+    });
+  }
+
+  checks.push(
     {
       rule: 'far',
       label: 'Floor Area Ratio (FAR)',
@@ -375,7 +393,7 @@ export function computeCompliance(
       allowed: isResidential ? 30 : 10,
       unit: '%',
       pass: openSpacePercent >= (isResidential ? 30 : 10) - 0.1,
-      statutoryRef: 'MR 55 Clause 33',
+      statutoryRef: 'MR 55 Clause 33 (Open Space Ratio)',
     },
     {
       rule: 'height',
@@ -393,7 +411,7 @@ export function computeCompliance(
       allowed: isHighRise ? '6.0m (MR 33)' : `${minRequiredRoadSetback}m (MR 55)`,
       unit: '',
       pass: true,
-      statutoryRef: isHighRise ? 'MR 33: 6m fire access' : 'MR 55 Clause 41',
+      statutoryRef: isHighRise ? 'MR 33: 6m fire access' : 'MR 55 Clause 41 (Road Setbacks)',
     },
     {
       rule: 'side-rear-setback',
@@ -402,7 +420,7 @@ export function computeCompliance(
       allowed: isHighRise ? '6.0m (MR 33)' : (height > 9 ? '3.0m' : '2.0m'),
       unit: '',
       pass: true,
-      statutoryRef: isHighRise ? 'MR 33: 6m all edges' : 'MR 55 Clause 50 (walls with openings)',
+      statutoryRef: isHighRise ? 'MR 33: 6m all edges' : 'MR 55 Clause 50 (Side/Rear Setbacks)',
     },
     {
       rule: 'sky-plane',
@@ -411,7 +429,7 @@ export function computeCompliance(
       allowed: '1:2 Slope',
       unit: '',
       pass: true,
-      statutoryRef: 'MR 55 Section 44 (H <= 2*(Road + Setback))',
+      statutoryRef: 'MR 55 Clause 44 (2:1 Sky Exposure Plane)',
     },
     {
       rule: 'road-width',
@@ -440,7 +458,7 @@ export function computeCompliance(
       pass: true, // informational flag
       statutoryRef: 'NEB EIA Notification (Height > 23m or Units >= 80)',
     },
-  ];
+  );
 
   return checks;
 }
@@ -477,7 +495,8 @@ export function evaluate(input: ZoningInput): EvaluationResult {
     maxFrontageLength = Math.max(maxFrontageLength, edgeLength(edge.start, edge.end));
   }
 
-  const checks = computeCompliance(plotArea, floors, input.edges, input.buildingType, roadElig);
+  const zoneCheck = isPlotInZoneYor9(input.polygonLngLat);
+  const checks = computeCompliance(plotArea, floors, input.edges, input.buildingType, roadElig, input.polygonLngLat);
   const plotRaiNganWah = sqmToRaiNganWah(plotArea);
 
   return {
@@ -509,6 +528,11 @@ export function evaluate(input: ZoningInput): EvaluationResult {
       : undefined,
     roadBlocker: roadElig.blocker,
     btsFlag: config.useCategory === 'commercial',
+    zoneCheck: input.polygonLngLat ? {
+      inZone: zoneCheck.inZone,
+      outsideCount: zoneCheck.outsideCount,
+      message: zoneCheck.message,
+    } : undefined,
 
     maxRoadWidth,
     maxFrontageLength,

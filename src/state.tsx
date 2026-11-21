@@ -1,12 +1,12 @@
 // ─── App State & Context ───
 import React, { createContext, useContext, useReducer, type Dispatch } from 'react';
 import type {
-  LngLatPolygon, BuildingType, DesignVariant, PresetPlot, LngLat, PlotEdge, ZoningInput,
+  LngLatPolygon, BuildingType, DesignVariant, PresetPlot, LngLat, PlotEdge, ZoningInput, RoadAdvisory,
 } from './engine/types';
 import type { DesignResult, EvaluationResult } from './engine/types';
 import { PRESET_PLOTS } from './engine/presets';
 import { anchorAtCentroid, polygonToMetric } from './engine/geo';
-import { ensureCCW, normalizePolygonWinding } from './engine/polygon';
+import { ensureCCW, normalizePolygonWinding, isPlotInZoneYor9 } from './engine/polygon';
 import { evaluate } from './engine/rules';
 import { generateDesigns } from './engine/designs';
 
@@ -18,7 +18,9 @@ export interface AppState {
 
   // Drawing mode & Warnings
   isDrawing: boolean;
-  roadEncroachment: { roadName?: string; count: number } | null;
+  roadEncroachment: RoadAdvisory | null;
+  isInsideZoneYor9: boolean;
+  zoneMessage?: string;
 
   // Plot
   polygon: LngLatPolygon;
@@ -68,6 +70,7 @@ function computeInitialPresetResults() {
       edges,
       buildingType: defaultPreset.buildingType,
       roadWidths: new Map(defaultPreset.roadEdges.map((i) => [i, defaultPreset.roadWidth])),
+      polygonLngLat: defaultPreset.polygon,
     };
     const evaluation = evaluate(input);
     const [designA, designB] = generateDesigns(input);
@@ -83,6 +86,8 @@ export const initialState: AppState = {
   stage: 'site',
   isDrawing: false,
   roadEncroachment: null,
+  isInsideZoneYor9: true,
+  zoneMessage: 'Verified within Zone Yor.9 (High-Density Residential, Brown Zone).',
   polygon: defaultPreset.polygon,
   roadEdges: defaultPreset.roadEdges,
   roadWidth: defaultPreset.roadWidth,
@@ -108,7 +113,7 @@ export type AppAction =
   | { type: 'CANCEL_DRAWING' }
   | { type: 'FINISH_DRAWING'; polygon: LngLatPolygon }
   | { type: 'CLEAR_PLOT' }
-  | { type: 'SET_ROAD_ENCROACHMENT'; encroachment: { roadName?: string; count: number } | null }
+  | { type: 'SET_ROAD_ENCROACHMENT'; encroachment: RoadAdvisory | null }
   | { type: 'SET_POLYGON'; polygon: LngLatPolygon }
   | { type: 'UPDATE_VERTEX'; index: number; coord: LngLat }
   | { type: 'SET_ROAD_EDGES'; roadEdges: number[] }
@@ -152,6 +157,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     case 'FINISH_DRAWING': {
       const normalized = normalizePolygonWinding(action.polygon, [0]);
+      const zone = isPlotInZoneYor9(normalized.vertices);
       return {
         ...state,
         isDrawing: false,
@@ -159,6 +165,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         roadEdges: normalized.roadEdges.length > 0 ? normalized.roadEdges : [0],
         activePresetId: null,
         selectedFloor: 0,
+        isInsideZoneYor9: zone.inZone,
+        zoneMessage: zone.message,
       };
     }
     case 'CLEAR_PLOT':
@@ -173,17 +181,34 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         selectedFloor: 0,
         isDrawing: false,
         roadEncroachment: null,
+        isInsideZoneYor9: true,
+        zoneMessage: undefined,
       };
     case 'SET_ROAD_ENCROACHMENT':
       return { ...state, roadEncroachment: action.encroachment };
     case 'SET_POLYGON': {
       const normalized = normalizePolygonWinding(action.polygon, state.roadEdges);
-      return { ...state, polygon: normalized.vertices, roadEdges: normalized.roadEdges, activePresetId: null };
+      const zone = isPlotInZoneYor9(normalized.vertices);
+      return {
+        ...state,
+        polygon: normalized.vertices,
+        roadEdges: normalized.roadEdges,
+        activePresetId: null,
+        isInsideZoneYor9: zone.inZone,
+        zoneMessage: zone.message,
+      };
     }
     case 'UPDATE_VERTEX': {
       const nextPoly = [...state.polygon];
       nextPoly[action.index] = action.coord;
-      return { ...state, polygon: nextPoly, activePresetId: null };
+      const zone = isPlotInZoneYor9(nextPoly);
+      return {
+        ...state,
+        polygon: nextPoly,
+        activePresetId: null,
+        isInsideZoneYor9: zone.inZone,
+        zoneMessage: zone.message,
+      };
     }
     case 'SET_ROAD_EDGES':
       return { ...state, roadEdges: action.roadEdges };
@@ -200,6 +225,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, buildingType: action.buildingType };
     case 'SET_PRESET': {
       const normalized = normalizePolygonWinding(action.polygon, action.roadEdges);
+      const zone = isPlotInZoneYor9(normalized.vertices);
       return {
         ...state,
         polygon: normalized.vertices,
@@ -208,6 +234,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         buildingType: action.buildingType,
         activePresetId: action.presetId,
         selectedFloor: 0,
+        isInsideZoneYor9: zone.inZone,
+        zoneMessage: zone.message,
       };
     }
     case 'SET_ACTIVE_DESIGN':

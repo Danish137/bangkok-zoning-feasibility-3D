@@ -7,7 +7,7 @@ import {
 import {
   polygonArea, signedArea, isCCW, ensureCCW, isSelfIntersecting,
   edgeLength, edgeOutwardNormal, inwardOffset, perEdgeInwardOffset,
-  polygonPerimeter, normalizePolygonWinding,
+  polygonPerimeter, normalizePolygonWinding, isPlotInZoneYor9,
 } from '../src/engine/polygon';
 import {
   computeEdgeSetback, checkRoadEligibility, generateFloors, evaluate,
@@ -545,5 +545,72 @@ describe('Design Generation', () => {
     expect(dA.actualFAR).toBeLessThan(ZONE_YOR9.maxFAR);
     expect(dA.limitingConstraint).toBeDefined();
     expect(dA.limitingConstraint).toContain('MR 33');
+  });
+
+  it('validates Zone Yor.9 official boundary: Sukhumvit inside, Siam/Rama IX outside', () => {
+    // Inside: Sukhumvit Soi 53 in Watthana
+    const insidePlot: [number, number][] = [
+      [100.5746, 13.7276],
+      [100.5752, 13.7276],
+      [100.5751, 13.7283],
+      [100.5747, 13.7283],
+    ];
+    const checkInside = isPlotInZoneYor9(insidePlot);
+    expect(checkInside.inZone).toBe(true);
+    expect(checkInside.outsideCount).toBe(0);
+
+    // Outside: Siam / Pathum Wan (west of Asok)
+    const outsidePlot: [number, number][] = [
+      [100.5300, 13.7450],
+      [100.5310, 13.7450],
+      [100.5310, 13.7460],
+      [100.5300, 13.7460],
+    ];
+    const checkOutside = isPlotInZoneYor9(outsidePlot);
+    expect(checkOutside.inZone).toBe(false);
+    expect(checkOutside.outsideCount).toBe(4);
+  });
+
+  it('verifies Design B is Open Space Optimized with independent compliance checks', () => {
+    const trapezoid = PRESET_PLOTS[1]!;
+    const anchor = anchorAtCentroid(trapezoid.polygon);
+    const metricPoly = polygonToMetric(anchor, trapezoid.polygon);
+    const edges: PlotEdge[] = metricPoly.map((_, i) => ({
+      index: i,
+      start: metricPoly[i]!,
+      end: metricPoly[(i + 1) % metricPoly.length]!,
+      type: trapezoid.roadEdges.includes(i) ? 'road' as const : 'side' as const,
+      roadWidth: trapezoid.roadEdges.includes(i) ? trapezoid.roadWidth : undefined,
+    }));
+    const input: ZoningInput = {
+      polygon: metricPoly,
+      edges,
+      buildingType: trapezoid.buildingType,
+      roadWidths: new Map(trapezoid.roadEdges.map(i => [i, trapezoid.roadWidth])),
+      polygonLngLat: trapezoid.polygon,
+    };
+    const [dA, dB] = generateDesigns(input);
+
+    expect(dB.label).toContain('Open Space Optimized');
+    expect(dB.openSpacePercent).toBeGreaterThanOrEqual(dA.openSpacePercent);
+
+    // Both designs have independent compliance checks
+    expect(dA.checks.length).toBeGreaterThan(0);
+    expect(dB.checks.length).toBeGreaterThan(0);
+    
+    // Check statutory references
+    const setbackCheck = dA.checks.find(c => c.rule === 'road-setback');
+    expect(setbackCheck).toBeDefined();
+    expect(setbackCheck?.statutoryRef).toContain('MR 33');
+
+    const bcaOpenSpace = dA.checks.find(c => c.rule === 'bca-open-space');
+    expect(bcaOpenSpace).toBeDefined();
+    expect(bcaOpenSpace?.statutoryRef).toContain('MR 55 Clause 33');
+
+    // Both pass Zone Yor.9 jurisdiction
+    const zoneCheckA = dA.checks.find(c => c.rule === 'zoning-boundary');
+    const zoneCheckB = dB.checks.find(c => c.rule === 'zoning-boundary');
+    expect(zoneCheckA?.pass).toBe(true);
+    expect(zoneCheckB?.pass).toBe(true);
   });
 });

@@ -22,9 +22,35 @@ export function ComplianceChecklist() {
 
   return (
     <div data-testid="compliance-checklist" className="flex flex-col gap-3">
+      {/* Design Switcher for Independent Compliance Audits */}
+      <div className="flex bg-slate-900/90 border border-slate-700/60 rounded-xl p-1 gap-1">
+        <button
+          data-testid="checklist-design-a-btn"
+          onClick={() => dispatch({ type: 'SET_ACTIVE_DESIGN', design: 'a' })}
+          className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-medium transition-all ${
+            state.activeDesign === 'a'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Option A: Max Yield
+        </button>
+        <button
+          data-testid="checklist-design-b-btn"
+          onClick={() => dispatch({ type: 'SET_ACTIVE_DESIGN', design: 'b' })}
+          className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-medium transition-all ${
+            state.activeDesign === 'b'
+              ? 'bg-emerald-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Option B: Open Space
+        </button>
+      </div>
+
       <div className="flex items-center justify-between">
         <h3 className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">
-          Statutory Compliance Matrix
+          Statutory Compliance Matrix ({state.activeDesign === 'b' ? 'Design B' : 'Design A'})
         </h3>
         <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
           allPass ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
