@@ -6,7 +6,7 @@ import type {
 import type { DesignResult, EvaluationResult } from './engine/types';
 import { PRESET_PLOTS } from './engine/presets';
 import { anchorAtCentroid, polygonToMetric } from './engine/geo';
-import { ensureCCW } from './engine/polygon';
+import { ensureCCW, normalizePolygonWinding } from './engine/polygon';
 import { evaluate } from './engine/rules';
 import { generateDesigns } from './engine/designs';
 
@@ -117,8 +117,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'SET_STAGE':
       return { ...state, stage: action.stage };
-    case 'SET_POLYGON':
-      return { ...state, polygon: action.polygon, activePresetId: null };
+    case 'SET_POLYGON': {
+      const normalized = normalizePolygonWinding(action.polygon, state.roadEdges);
+      return { ...state, polygon: normalized.vertices, roadEdges: normalized.roadEdges, activePresetId: null };
+    }
     case 'UPDATE_VERTEX': {
       const nextPoly = [...state.polygon];
       nextPoly[action.index] = action.coord;
@@ -137,16 +139,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, roadWidth: action.width };
     case 'SET_BUILDING_TYPE':
       return { ...state, buildingType: action.buildingType };
-    case 'SET_PRESET':
+    case 'SET_PRESET': {
+      const normalized = normalizePolygonWinding(action.polygon, action.roadEdges);
       return {
         ...state,
-        polygon: action.polygon,
-        roadEdges: action.roadEdges,
+        polygon: normalized.vertices,
+        roadEdges: normalized.roadEdges,
         roadWidth: action.roadWidth,
         buildingType: action.buildingType,
         activePresetId: action.presetId,
         selectedFloor: 0,
       };
+    }
     case 'SET_ACTIVE_DESIGN':
       return { ...state, activeDesign: action.design };
     case 'SET_SELECTED_FLOOR':

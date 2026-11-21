@@ -379,7 +379,7 @@ export function MapContainer() {
           });
 
           if (overlappingIds.length > 0) {
-            map.setFilter('building-3d', ['!in', ['id'], ['literal', overlappingIds]]);
+            map.setFilter('building-3d', ['!in', ['id'], ['literal', overlappingIds]] as any);
           }
         } catch (err) {
           console.debug('OSM building filter:', err);
@@ -620,7 +620,7 @@ export function MapContainer() {
           });
 
           if (overlappingIds.length > 0) {
-            map.setFilter('building-3d', ['!in', ['id'], ['literal', overlappingIds]]);
+            map.setFilter('building-3d', ['!in', ['id'], ['literal', overlappingIds]] as any);
           }
         }
       } catch (err) {
@@ -689,37 +689,23 @@ export function MapContainer() {
     siteEdgeLine.userData = { isCustom: true };
     scene.add(siteEdgeLine);
 
-    // ── 2. Surrounding Bangkok Urban Context Massing ──
-    const contextBuildings: { offset: [number, number]; size: [number, number]; height: number }[] = [
-      { offset: [35, 40], size: [24, 18], height: 28 },
-      { offset: [-30, 45], size: [20, 22], height: 35 },
-      { offset: [-45, -25], size: [18, 30], height: 16 },
-      { offset: [40, -35], size: [28, 20], height: 42 },
-      { offset: [-35, 0], size: [16, 25], height: 21 },
-      { offset: [45, 10], size: [20, 24], height: 18 },
-    ];
+    // ── 2. Road Frontage 3D Edge Articulation ──
+    state.roadEdges.forEach((edgeIdx) => {
+      const p1 = ccwPlot[edgeIdx];
+      const p2 = ccwPlot[(edgeIdx + 1) % ccwPlot.length];
+      if (!p1 || !p2) return;
 
-    contextBuildings.forEach((b) => {
-      const geo = new THREE.BoxGeometry(b.size[0], b.size[1], b.height);
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x1e293b,
-        transparent: true,
-        opacity: 0.5,
-        roughness: 0.8,
-        side: THREE.DoubleSide,
+      const roadEdgeGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(p1[0], p1[1], 0.12),
+        new THREE.Vector3(p2[0], p2[1], 0.12),
+      ]);
+      const roadEdgeMat = new THREE.LineBasicMaterial({
+        color: 0xf59e0b,
+        linewidth: 4,
       });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(b.offset[0], b.offset[1], b.height / 2);
-      mesh.userData = { isCustom: true };
-      scene.add(mesh);
-
-      const edge = new THREE.LineSegments(
-        new THREE.EdgesGeometry(geo),
-        new THREE.LineBasicMaterial({ color: 0x334155 })
-      );
-      edge.position.copy(mesh.position);
-      edge.userData = { isCustom: true };
-      scene.add(edge);
+      const roadEdgeLine = new THREE.Line(roadEdgeGeo, roadEdgeMat);
+      roadEdgeLine.userData = { isCustom: true };
+      scene.add(roadEdgeLine);
     });
 
     // ── 3. OSR Open Space Footprint (Landscaped Green Zone) ──

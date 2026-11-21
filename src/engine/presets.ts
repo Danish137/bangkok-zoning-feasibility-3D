@@ -7,14 +7,14 @@ const PRESET_L_SHAPE: PresetPlot = {
   label: 'L-Shape on 8m Soi',
   description: 'L-shaped plot on a narrow 8m Sukhumvit soi near Thonglor',
   polygon: [
+    [100.5790, 13.7312],  // SW corner on Soi Thong Lo 9
+    [100.5794, 13.7312],  // SE corner on Soi Thong Lo 9
+    [100.5794, 13.7316],  // East step
+    [100.5792, 13.7316],  // Inner corner
+    [100.5792, 13.7320],  // NE corner
     [100.5790, 13.7320],  // NW corner
-    [100.5794, 13.7320],  // NE corner (top part)
-    [100.5794, 13.7316],  // step in
-    [100.5792, 13.7316],  // inner corner
-    [100.5792, 13.7312],  // SE corner
-    [100.5790, 13.7312],  // SW corner
   ],
-  roadEdges: [5],  // south edge faces the soi
+  roadEdges: [0],  // Edge 0 (SW to SE) directly faces the 8m soi
   roadWidth: 8,
   buildingType: 'low-rise-condo',
 };

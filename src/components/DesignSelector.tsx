@@ -63,6 +63,14 @@ export function DesignSelector() {
                     </div>
                   </div>
                 )}
+                {d.data?.limitingConstraint && isSelected && (
+                  <div className="mt-2 text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/25 rounded-lg p-2 leading-relaxed">
+                    <div className="font-semibold text-amber-400 mb-0.5 flex items-center gap-1">
+                      <span>ℹ️</span> Limiting Constraint:
+                    </div>
+                    {d.data.limitingConstraint}
+                  </div>
+                )}
               </button>
             );
           })}

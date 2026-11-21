@@ -1,6 +1,6 @@
 // ─── App Root Component ───
 import React from 'react';
-import { AppProvider, useAppState } from './state';
+import { AppProvider, useAppState, useAppDispatch } from './state';
 import { MapContainer } from './components/MapContainer';
 import { StageBar } from './components/StageBar';
 import { SidePanel } from './components/SidePanel';
@@ -9,6 +9,9 @@ import { useEngine } from './hooks/useEngine';
 function AppInner() {
   useEngine();
   const state = useAppState();
+  const dispatch = useAppDispatch();
+  (window as any).__dispatch__ = dispatch;
+  (window as any).__state__ = state;
   const activeDesign = state.activeDesign === 'b' ? state.designB : state.designA;
 
   return (

@@ -100,6 +100,19 @@ function buildDesignResult(
   const roadElig = checkRoadEligibility(input.edges, plotArea);
   const checks = computeCompliance(plotArea, floors, input.edges, input.buildingType, roadElig);
 
+  let limitingConstraint: string | undefined;
+  if (actualFAR < ZONE_YOR9.maxFAR - 0.1) {
+    if (!roadElig.highRiseAllowed) {
+      limitingConstraint = `Capped at FAR ${actualFAR.toFixed(2)} vs statutory max 7.0: ${roadElig.blocker || 'Road width < 10m'} limits height to 23m (${floors.length}F max under MR 33). Boundary setbacks (2m/3m) restrict floor plate.`;
+    } else if (config.maxHeightCap && config.maxHeightCap <= 23) {
+      limitingConstraint = `Capped at FAR ${actualFAR.toFixed(2)} vs statutory max 7.0: Selected typology '${config.label}' enforces a 23m height cap (${floors.length} storeys).`;
+    } else if (roadElig.maxGFA < plotArea * ZONE_YOR9.maxFAR) {
+      limitingConstraint = `Capped at FAR ${actualFAR.toFixed(2)} vs statutory max 7.0: Road width < 18m imposes a 30,000 m² GFA cap (MR 33).`;
+    } else {
+      limitingConstraint = `FAR ${actualFAR.toFixed(2)} constrained by 2:1 sky exposure plane stepbacks (MR 55 Sec. 44) and statutory setbacks.`;
+    }
+  }
+
   return {
     variant,
     label,
@@ -118,6 +131,7 @@ function buildDesignResult(
     eiaReason: eiaRequired
       ? (height > 23 ? 'Residential building height > 23m' : `Estimated ${estimatedUnits} units ≥ 80 threshold`)
       : undefined,
+    limitingConstraint,
   };
 }
 

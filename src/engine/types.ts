@@ -197,6 +197,7 @@ export interface DesignResult {
   checks: ComplianceCheck[];
   eiaRequired: boolean;
   eiaReason?: string;
+  limitingConstraint?: string;
 }
 
 /** Thai area conversion */

@@ -33,6 +33,35 @@ export function ensureCCW(poly: Polygon): Polygon {
   return [...poly].reverse();
 }
 
+/**
+ * Normalizes polygon vertices to CCW winding and remaps edge indices accordingly.
+ * When an n-vertex polygon [V0, V1, ..., Vn-1] is reversed to [Vn-1, ..., V0],
+ * an edge originally between Vi and Vi+1 becomes the edge between Vn-1-i and Vn-2-i,
+ * which in CCW order is indexed as (n - 2 - i + n) % n.
+ */
+export function normalizePolygonWinding<T extends [number, number]>(
+  vertices: T[],
+  roadEdges: number[] = []
+): { vertices: T[]; roadEdges: number[]; wasReversed: boolean } {
+  const n = vertices.length;
+  if (n < 3) return { vertices: [...vertices], roadEdges: [...roadEdges], wasReversed: false };
+
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const p1 = vertices[i]!;
+    const p2 = vertices[(i + 1) % n]!;
+    area += p1[0] * p2[1] - p2[0] * p1[1];
+  }
+
+  if (area > 0) {
+    return { vertices: [...vertices], roadEdges: [...roadEdges], wasReversed: false };
+  }
+
+  const reversed = [...vertices].reverse();
+  const remapped = roadEdges.map((i) => (n - 2 - i + n) % n);
+  return { vertices: reversed, roadEdges: remapped, wasReversed: true };
+}
+
 /** Check if polygon is self-intersecting */
 export function isSelfIntersecting(poly: Polygon): boolean {
   const n = poly.length;

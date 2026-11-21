@@ -7,7 +7,7 @@ import {
 import {
   polygonArea, signedArea, isCCW, ensureCCW, isSelfIntersecting,
   edgeLength, edgeOutwardNormal, inwardOffset, perEdgeInwardOffset,
-  polygonPerimeter,
+  polygonPerimeter, normalizePolygonWinding,
 } from '../src/engine/polygon';
 import {
   computeEdgeSetback, checkRoadEligibility, generateFloors, evaluate,
@@ -506,5 +506,44 @@ describe('Design Generation', () => {
       const sumB = dB.floors.reduce((s, f) => s + f.areaSqm, 0);
       expect(Math.abs(dB.totalGFA - sumB)).toBeLessThan(0.1);
     }
+  });
+
+  it('normalizes polygon winding and remaps edge indices correctly', () => {
+    // 4-vertex CW polygon: [0,0], [0,10], [10,10], [10,0] (Clockwise)
+    const cwPoly: [number, number][] = [[0, 0], [0, 10], [10, 10], [10, 0]];
+    // Edge 0 is [0,0]->[0,10] (West edge)
+    const normalized = normalizePolygonWinding(cwPoly, [0]);
+    expect(normalized.wasReversed).toBe(true);
+    // Reversed: [10,0], [10,10], [0,10], [0,0]
+    // In reversed poly, Edge (4 - 2 - 0) % 4 = 2 is [0,10]->[0,0] (West edge reversed!)
+    expect(normalized.roadEdges).toEqual([2]);
+    // The edge between [0,0] and [0,10] is now edge 2 in the reversed polygon
+    const p1 = normalized.vertices[2]!;
+    const p2 = normalized.vertices[3]!;
+    expect(p1).toEqual([0, 10]);
+    expect(p2).toEqual([0, 0]);
+  });
+
+  it('reports limitingConstraint explaining unused FAR in Design A', () => {
+    const lShape = PRESET_PLOTS[0]!;
+    const anchor = anchorAtCentroid(lShape.polygon);
+    const metricPoly = polygonToMetric(anchor, lShape.polygon);
+    const edges: PlotEdge[] = metricPoly.map((_, i) => ({
+      index: i,
+      start: metricPoly[i]!,
+      end: metricPoly[(i + 1) % metricPoly.length]!,
+      type: lShape.roadEdges.includes(i) ? 'road' as const : 'side' as const,
+      roadWidth: lShape.roadEdges.includes(i) ? lShape.roadWidth : undefined,
+    }));
+    const input: ZoningInput = {
+      polygon: metricPoly,
+      edges,
+      buildingType: lShape.buildingType,
+      roadWidths: new Map(lShape.roadEdges.map(i => [i, lShape.roadWidth])),
+    };
+    const [dA] = generateDesigns(input);
+    expect(dA.actualFAR).toBeLessThan(ZONE_YOR9.maxFAR);
+    expect(dA.limitingConstraint).toBeDefined();
+    expect(dA.limitingConstraint).toContain('MR 33');
   });
 });
