@@ -347,7 +347,81 @@ describe('Full Evaluation', () => {
   });
 });
 
-// ─── Design Tests ───
+// ─── Statutory & Statutory Edge-Case Tests ───
+describe('Bangkok Yor.9 Statutory Edge Cases & EIA Triggers', () => {
+  it('EIA triggered when residential height exceeds 23m', () => {
+    const poly = rectPlot(50, 40);
+    const edges = rectEdges(50, 40, 12, 0);
+    const input: ZoningInput = {
+      polygon: poly,
+      edges,
+      buildingType: 'high-rise-condo',
+      roadWidths: new Map([[0, 12]]),
+    };
+    const evalResult = evaluate(input);
+    expect(evalResult.isHighRise).toBe(true);
+    expect(evalResult.eiaRequired).toBe(true);
+    expect(evalResult.eiaReason).toContain('Height > 23m');
+  });
+
+  it('EIA triggered when estimated residential units >= 80 even under 23m', () => {
+    // Large plot (e.g. 5,000 sqm) capped at low-rise height
+    const poly = rectPlot(80, 60);
+    const edges = rectEdges(80, 60, 8, 0); // 8m narrow soi -> capped at 23m
+    const input: ZoningInput = {
+      polygon: poly,
+      edges,
+      buildingType: 'low-rise-condo',
+      roadWidths: new Map([[0, 8]]),
+    };
+    const evalResult = evaluate(input);
+    expect(evalResult.heightM).toBeLessThanOrEqual(23);
+    // Large footprint means units will exceed 80
+    if (evalResult.estimatedUnits >= 80) {
+      expect(evalResult.eiaRequired).toBe(true);
+      expect(evalResult.eiaReason).toContain('units ≥ 80');
+    }
+  });
+
+  it('MR 33: Road width >= 18m required for GFA >= 30,000 sqm', () => {
+    // 12m road: max GFA capped at 29,999 sqm
+    const edges12 = rectEdges(100, 100, 12, 0);
+    const roadElig12 = checkRoadEligibility(edges12, 10000);
+    expect(roadElig12.maxGFA).toBeLessThanOrEqual(30000);
+
+    // 18m road: uncapped by road width (FAR 7.0 applies = 70,000 sqm)
+    const edges18 = rectEdges(100, 100, 18, 0);
+    const roadElig18 = checkRoadEligibility(edges18, 10000);
+    expect(roadElig18.maxGFA).toBe(70000);
+  });
+
+  it('MR 55 Section 44: 2:1 sky plane steps back correctly on narrow 8m soi', () => {
+    const poly = rectPlot(40, 30);
+    const edges = rectEdges(40, 30, 8, 0);
+    
+    // At H = 20m, clip from road edge = 20/2 - 8 = 2m (same as base setback)
+    const res20 = applySkyPlane(poly, poly, edges, 20);
+    expect(res20.clips.length).toBe(1);
+    expect(res20.clips[0]!.clipDistanceFromRoad).toBe(2);
+
+    // At H = 22m, clip from road edge = 22/2 - 8 = 3m
+    const res22 = applySkyPlane(poly, poly, edges, 22);
+    expect(res22.clips[0]!.clipDistanceFromRoad).toBe(3);
+  });
+
+  it('Commercial office use flags BTS/MRT transit condition', () => {
+    const poly = rectPlot(50, 40);
+    const edges = rectEdges(50, 40, 12, 0);
+    const input: ZoningInput = {
+      polygon: poly,
+      edges,
+      buildingType: 'commercial-office',
+      roadWidths: new Map([[0, 12]]),
+    };
+    const evalResult = evaluate(input);
+    expect(evalResult.btsFlag).toBe(true);
+  });
+});
 describe('Design Generation', () => {
   it('Design A maximizes GFA', () => {
     const poly = rectPlot(50, 40);

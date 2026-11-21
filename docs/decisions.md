@@ -12,3 +12,8 @@
 | 8 | Assume walls with openings on all sides | Conservative interpretation; most residential buildings have windows everywhere | Slightly larger setbacks than buildings with blank party walls |
 | 9 | Floor area = area of clipped floor polygon | Exact GFA from geometry, not approximated from footprint × floors | Upper floors may be smaller due to sky plane stepback |
 | 10 | Tailwind v4 with @import "tailwindcss" | Latest version, no config file needed, CSS-first | Newer API, fewer community examples |
+| 11 | Local metric to Mercator matrix in CustomLayer | `camera.projectionMatrix = mercatorToClip.multiply(localToMercator)`. Lets all Three.js meshes be constructed in real-world meters (X=East, Y=North, Z=Up) | Requires exact Mercator scale and Y-inversion |
+| 12 | Invert Y scale for Three.js Mercator projection | Mercator Y increases southward; inverting scale aligns +Y with true North and +Z with elevation above ground | Must be accounted for in direct unprojection |
+| 13 | Architectural slab articulation (0.94 floor height) | Slight visual gap between floor slabs highlights each storey cleanly and prevents Z-fighting | Floor polygon area is uncompromised; visual only |
+| 14 | Distinct Design B massing generator | Implements a real 3-storey podium + 4m inset slender tower for high-rise, and a courtyard block with 79-unit cap for sub-EIA | Requires parameterized floor generation options |
+| 15 | Live 3D Raycasting with inverted projection matrix | Direct click-to-pick floor slabs unprojecting NDC coordinates through camera.projectionMatrix | Requires meshes to maintain floorIndex in userData |

@@ -1,10 +1,10 @@
 // ─── MapContainer: MapLibre + Three.js Shared WebGL ───
-import React, { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import * as THREE from 'three';
 import { useAppState, useAppDispatch } from '../state';
 import { anchorAtCentroid, polygonToMetric, toLngLat } from '../engine/geo';
-import { ensureCCW, polygonArea } from '../engine/polygon';
+import { ensureCCW, polygonArea, edgeInwardNormal, edgeLength } from '../engine/polygon';
 import type { LngLat, LngLatPolygon, Polygon, FloorResult } from '../engine/types';
 import { ZONE_YOR9 } from '../engine/types';
 
@@ -12,11 +12,11 @@ const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 
 // Camera presets for stages
 const CAMERA_PRESETS = {
-  site: { pitch: 45, bearing: -30, zoom: 16 },
-  building: { pitch: 55, bearing: -45, zoom: 17 },
-  floor: { pitch: 50, bearing: -30, zoom: 17.5 },
-  compliance: { pitch: 55, bearing: -45, zoom: 17 },
-  report: { pitch: 40, bearing: 0, zoom: 16.5 },
+  site: { pitch: 48, bearing: -25, zoom: 16.8 },
+  building: { pitch: 58, bearing: -42, zoom: 17.2 },
+  floor: { pitch: 52, bearing: -30, zoom: 17.8 },
+  compliance: { pitch: 58, bearing: -45, zoom: 17.2 },
+  report: { pitch: 35, bearing: 0, zoom: 16.5 },
 };
 
 export function MapContainer() {
@@ -26,49 +26,49 @@ export function MapContainer() {
     renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;
     camera: THREE.Camera;
+    buildingMeshes: THREE.Mesh[];
   } | null>(null);
+
   const drawingRef = useRef<LngLatPolygon>([]);
+  const draggingVertexRef = useRef<number | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
   const state = useAppState();
   const dispatch = useAppDispatch();
 
+  // Ref to hold state for WebGL render callback without stale closures
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
   // Initialize MapLibre
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
+    const initialCenter = state.polygon.length >= 3
+      ? anchorAtCentroid(state.polygon)
+      : { lngDeg: ZONE_YOR9.center[0], latDeg: ZONE_YOR9.center[1] };
+
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: OPENFREEMAP_STYLE,
-      center: [ZONE_YOR9.center[0], ZONE_YOR9.center[1]],
-      zoom: 16,
-      pitch: 45,
-      bearing: -30,
-      maxPitch: 70,
+      center: [initialCenter.lngDeg, initialCenter.latDeg],
+      zoom: 16.8,
+      pitch: 48,
+      bearing: -25,
+      maxPitch: 75,
     } as maplibregl.MapOptions);
 
-    map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
 
     map.on('load', () => {
-      // Add 3D buildings layer
-      const layers = map.getStyle().layers;
-      if (layers) {
-        // Enable 3D building extrusions if available
-        for (const layer of layers) {
-          if (layer.id.includes('building') && layer.type === 'fill') {
-            map.setPaintProperty(layer.id, 'fill-opacity', 0.6);
-          }
-        }
-      }
-
-      // Add Three.js custom layer
+      // Custom Three.js layer
       const customLayer: maplibregl.CustomLayerInterface = {
         id: 'three-layer',
         type: 'custom',
         renderingMode: '3d',
-        onAdd(map, gl) {
+        onAdd(mapInstance, gl) {
           const renderer = new THREE.WebGLRenderer({
-            canvas: map.getCanvas(),
+            canvas: mapInstance.getCanvas(),
             context: gl,
             antialias: true,
           });
@@ -77,23 +77,46 @@ export function MapContainer() {
           const scene = new THREE.Scene();
           const camera = new THREE.Camera();
 
-          // Lighting
-          const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+          // Ambient & architectural directional lighting
+          const ambient = new THREE.AmbientLight(0xffffff, 0.75);
           scene.add(ambient);
-          const directional = new THREE.DirectionalLight(0xffffff, 0.8);
-          directional.position.set(1, 1, 1);
-          scene.add(directional);
 
-          threeRef.current = { renderer, scene, camera };
+          const sun = new THREE.DirectionalLight(0xfff7ed, 1.2);
+          sun.position.set(120, 150, 200);
+          scene.add(sun);
+
+          const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.5);
+          fillLight.position.set(-100, -120, 80);
+          scene.add(fillLight);
+
+          threeRef.current = { renderer, scene, camera, buildingMeshes: [] };
         },
         render(gl, args) {
           if (!threeRef.current) return;
           const { renderer, scene, camera } = threeRef.current;
+          const currentState = stateRef.current;
 
-          // Sync camera from MapLibre's projection matrix
-          camera.projectionMatrix = new THREE.Matrix4().fromArray(
+          if (currentState.polygon.length < 3) return;
+
+          // Compute local metric to Mercator matrix
+          const anchor = anchorAtCentroid(currentState.polygon);
+          const centerMerc = maplibregl.MercatorCoordinate.fromLngLat(
+            { lng: anchor.lngDeg, lat: anchor.latDeg },
+            0
+          );
+          const meterScale = centerMerc.meterInMercatorCoordinateUnits();
+
+          // Metric coordinates: X = East (m), Y = North (m), Z = Up (m)
+          // In Mercator: Y is inverted (South is positive Y)
+          const localToMercator = new THREE.Matrix4()
+            .makeTranslation(centerMerc.x, centerMerc.y, centerMerc.z)
+            .scale(new THREE.Vector3(meterScale, -meterScale, meterScale));
+
+          const mercatorToClip = new THREE.Matrix4().fromArray(
             args.projectionMatrix as number[]
           );
+
+          camera.projectionMatrix = mercatorToClip.multiply(localToMercator);
 
           renderer.resetState();
           renderer.render(scene, camera);
@@ -102,7 +125,7 @@ export function MapContainer() {
 
       map.addLayer(customLayer);
 
-      // Source and layers for plot polygon
+      // Plot polygon GeoJSON source
       map.addSource('plot-polygon', {
         type: 'geojson',
         data: { type: 'Feature', geometry: { type: 'Polygon', coordinates: [[]] }, properties: {} },
@@ -113,8 +136,8 @@ export function MapContainer() {
         type: 'fill',
         source: 'plot-polygon',
         paint: {
-          'fill-color': '#6366f1',
-          'fill-opacity': 0.15,
+          'fill-color': '#4f46e5',
+          'fill-opacity': 0.12,
         },
       });
 
@@ -124,11 +147,11 @@ export function MapContainer() {
         source: 'plot-polygon',
         paint: {
           'line-color': '#818cf8',
-          'line-width': 2,
+          'line-width': 2.5,
         },
       });
 
-      // Source for road edges
+      // Road edges source & layer
       map.addSource('road-edges', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
@@ -140,11 +163,11 @@ export function MapContainer() {
         source: 'road-edges',
         paint: {
           'line-color': '#f59e0b',
-          'line-width': 4,
+          'line-width': 5,
         },
       });
 
-      // Source for plot vertices
+      // Vertices source & layer (for interactive dragging)
       map.addSource('plot-vertices', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
@@ -155,14 +178,14 @@ export function MapContainer() {
         type: 'circle',
         source: 'plot-vertices',
         paint: {
-          'circle-radius': 6,
+          'circle-radius': 7,
           'circle-color': '#ffffff',
           'circle-stroke-color': '#6366f1',
-          'circle-stroke-width': 2,
+          'circle-stroke-width': 2.5,
         },
       });
 
-      // Drawing line source
+      // Drawing line preview source
       map.addSource('drawing-line', {
         type: 'geojson',
         data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} },
@@ -173,61 +196,140 @@ export function MapContainer() {
         type: 'line',
         source: 'drawing-line',
         paint: {
-          'line-color': '#a5b4fc',
+          'line-color': '#38bdf8',
           'line-width': 2,
           'line-dasharray': [3, 2],
         },
       });
     });
 
-    // Click handler for polygon drawing
-    map.on('click', (e) => {
-      const lngLat: LngLat = [e.lngLat.lng, e.lngLat.lat];
+    // ─── Interaction Handlers ───
 
-      // Check if clicking near first vertex to close polygon
-      if (drawingRef.current.length >= 3) {
-        const first = drawingRef.current[0]!;
-        const pixel = map.project(new maplibregl.LngLat(first[0], first[1]));
-        const clickPixel = e.point;
-        const dist = Math.sqrt(
-          (pixel.x - clickPixel.x) ** 2 + (pixel.y - clickPixel.y) ** 2
-        );
-        if (dist < 20) {
-          // Close polygon
-          dispatch({ type: 'SET_POLYGON', polygon: [...drawingRef.current] });
-          drawingRef.current = [];
-          setIsDrawing(false);
-          return;
+    // Vertex dragging
+    map.on('mousedown', 'plot-vertices-circle', (e) => {
+      e.preventDefault();
+      const features = map.queryRenderedFeatures(e.point, { layers: ['plot-vertices-circle'] });
+      if (features.length > 0) {
+        const idx = features[0]?.properties?.index;
+        if (typeof idx === 'number') {
+          draggingVertexRef.current = idx;
+          map.getCanvas().style.cursor = 'grabbing';
+          map.dragPan.disable();
+        }
+      }
+    });
+
+    map.on('mousemove', (e) => {
+      if (draggingVertexRef.current !== null) {
+        const idx = draggingVertexRef.current;
+        const newCoords: LngLat = [e.lngLat.lng, e.lngLat.lat];
+        dispatch({ type: 'UPDATE_VERTEX', index: idx, coord: newCoords });
+        return;
+      }
+
+      // Cursor styling
+      if (map.getLayer('plot-vertices-circle')) {
+        const features = map.queryRenderedFeatures(e.point, { layers: ['plot-vertices-circle', 'plot-outline'] });
+        map.getCanvas().style.cursor = features.length > 0 ? 'pointer' : '';
+      }
+    });
+
+    map.on('mouseup', () => {
+      if (draggingVertexRef.current !== null) {
+        draggingVertexRef.current = null;
+        map.getCanvas().style.cursor = '';
+        map.dragPan.enable();
+      }
+    });
+
+    // Map Click: Drawing OR Edge Frontage Toggle OR 3D Floor Raycasting
+    map.on('click', (e) => {
+      if (draggingVertexRef.current !== null) return;
+
+      const currentState = stateRef.current;
+      const clickedLngLat: LngLat = [e.lngLat.lng, e.lngLat.lat];
+
+      // 1. If currently in drawing mode
+      if (isDrawing || currentState.polygon.length < 3) {
+        if (drawingRef.current.length >= 3) {
+          const first = drawingRef.current[0]!;
+          const firstPixel = map.project(new maplibregl.LngLat(first[0], first[1]));
+          const dist = Math.hypot(firstPixel.x - e.point.x, firstPixel.y - e.point.y);
+          if (dist < 25) {
+            // Close polygon
+            dispatch({ type: 'SET_POLYGON', polygon: [...drawingRef.current] });
+            drawingRef.current = [];
+            setIsDrawing(false);
+            return;
+          }
+        }
+        drawingRef.current.push(clickedLngLat);
+        setIsDrawing(true);
+        (map.getSource('drawing-line') as maplibregl.GeoJSONSource)?.setData({
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: drawingRef.current },
+          properties: {},
+        });
+        return;
+      }
+
+      // 2. Check 3D Floor Slab Raycasting first
+      if (threeRef.current && threeRef.current.buildingMeshes.length > 0) {
+        const canvas = map.getCanvas();
+        const rect = canvas.getBoundingClientRect();
+        const ndcX = ((e.point.x) / rect.width) * 2 - 1;
+        const ndcY = -((e.point.y) / rect.height) * 2 + 1;
+
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), threeRef.current.camera);
+
+        const intersects = raycaster.intersectObjects(threeRef.current.buildingMeshes, false);
+        if (intersects.length > 0) {
+          const hit = intersects[0]!;
+          const floorIdx = hit.object.userData.floorIndex;
+          if (typeof floorIdx === 'number') {
+            dispatch({ type: 'SET_SELECTED_FLOOR', floor: floorIdx });
+            return;
+          }
         }
       }
 
-      // Add vertex
-      drawingRef.current.push(lngLat);
-      setIsDrawing(true);
-      updateDrawingLine(map);
-    });
+      // 3. Edge click check: toggle road frontage on closest edge
+      if (currentState.stage === 'site' && currentState.polygon.length >= 3) {
+        const poly = currentState.polygon;
+        const n = poly.length;
+        let closestEdge = -1;
+        let minPixelDist = Infinity;
 
-    // Edge click for road frontage toggle
-    map.on('click', 'plot-outline', (e) => {
-      if (drawingRef.current.length > 0) return; // Don't toggle while drawing
-      e.preventDefault();
+        for (let i = 0; i < n; i++) {
+          const p1 = poly[i]!;
+          const p2 = poly[(i + 1) % n]!;
+          const pix1 = map.project(new maplibregl.LngLat(p1[0], p1[1]));
+          const pix2 = map.project(new maplibregl.LngLat(p2[0], p2[1]));
 
-      const clickPt = e.lngLat;
-      const poly = (map.getSource('plot-polygon') as maplibregl.GeoJSONSource)
-        ?._data as any;
+          const dist = distanceToSegment(e.point, pix1, pix2);
+          if (dist < minPixelDist) {
+            minPixelDist = dist;
+            closestEdge = i;
+          }
+        }
 
-      // Find closest edge — handled in state update
+        if (minPixelDist < 20 && closestEdge !== -1) {
+          dispatch({ type: 'TOGGLE_ROAD_EDGE', edgeIndex: closestEdge });
+          return;
+        }
+      }
     });
 
     mapRef.current = map;
 
     return () => {
-      // Cleanup Three.js
       if (threeRef.current) {
         threeRef.current.scene.traverse((obj) => {
           if (obj instanceof THREE.Mesh) {
             obj.geometry.dispose();
-            if (obj.material instanceof THREE.Material) obj.material.dispose();
+            if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
+            else if (obj.material) obj.material.dispose();
           }
         });
       }
@@ -236,21 +338,21 @@ export function MapContainer() {
     };
   }, []);
 
-  // Update plot polygon on map
+  // ─── Update Map 2D Layers (Plot, Vertices, Roads) ───
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
 
     const poly = state.polygon;
     if (poly.length >= 3) {
-      const coords = [...poly, poly[0]!]; // Close ring
+      const closedCoords = [...poly, poly[0]!];
       (map.getSource('plot-polygon') as maplibregl.GeoJSONSource)?.setData({
         type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [coords] },
+        geometry: { type: 'Polygon', coordinates: [closedCoords] },
         properties: {},
       });
 
-      // Update vertices
+      // Update draggable vertices
       (map.getSource('plot-vertices') as maplibregl.GeoJSONSource)?.setData({
         type: 'FeatureCollection',
         features: poly.map((p, i) => ({
@@ -260,17 +362,14 @@ export function MapContainer() {
         })),
       });
 
-      // Update road edges
+      // Update highlighted road edges
       const roadFeatures = state.roadEdges.map((edgeIdx) => {
         const p1 = poly[edgeIdx];
         const p2 = poly[(edgeIdx + 1) % poly.length];
         if (!p1 || !p2) return null;
         return {
           type: 'Feature' as const,
-          geometry: {
-            type: 'LineString' as const,
-            coordinates: [p1, p2],
-          },
+          geometry: { type: 'LineString' as const, coordinates: [p1, p2] },
           properties: { edgeIndex: edgeIdx },
         };
       }).filter(Boolean);
@@ -280,166 +379,307 @@ export function MapContainer() {
         features: roadFeatures as any[],
       });
 
-      // Clear drawing line
       (map.getSource('drawing-line') as maplibregl.GeoJSONSource)?.setData({
         type: 'Feature',
         geometry: { type: 'LineString', coordinates: [] },
         properties: {},
-      });
-    } else {
-      // Clear all
-      (map.getSource('plot-polygon') as maplibregl.GeoJSONSource)?.setData({
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [[]] },
-        properties: {},
-      });
-      (map.getSource('plot-vertices') as maplibregl.GeoJSONSource)?.setData({
-        type: 'FeatureCollection',
-        features: [],
-      });
-      (map.getSource('road-edges') as maplibregl.GeoJSONSource)?.setData({
-        type: 'FeatureCollection',
-        features: [],
       });
     }
 
     map.triggerRepaint();
   }, [state.polygon, state.roadEdges]);
 
-  // Update 3D buildings
+  // ─── Update Three.js 3D Massing & Regulatory Guides ───
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !threeRef.current) return;
 
     const { scene } = threeRef.current;
 
-    // Clear previous buildings
+    // Dispose existing meshes
     const toRemove: THREE.Object3D[] = [];
     scene.traverse((obj) => {
-      if (obj.userData.isBuilding) toRemove.push(obj);
+      if (obj.userData.isCustom) toRemove.push(obj);
     });
     toRemove.forEach((obj) => {
       if (obj instanceof THREE.Mesh) {
         obj.geometry.dispose();
-        if (obj.material instanceof THREE.Material) obj.material.dispose();
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
+        else if (obj.material) obj.material.dispose();
       }
       scene.remove(obj);
     });
 
-    const design = state.activeDesign === 'b' ? state.designB : state.designA;
-    if (!design || state.polygon.length < 3 || state.activeDesign === 'envelope') return;
+    threeRef.current.buildingMeshes = [];
+
+    if (state.polygon.length < 3) {
+      map.triggerRepaint();
+      return;
+    }
 
     const anchor = anchorAtCentroid(state.polygon);
-    const centerMerc = maplibregl.MercatorCoordinate.fromLngLat(
-      { lng: anchor.lngDeg, lat: anchor.latDeg },
-      0
-    );
-    const scale = centerMerc.meterInMercatorCoordinateUnits();
+    const metricPlot = polygonToMetric(anchor, state.polygon);
+    const ccwPlot = ensureCCW(metricPlot);
 
-    // Create floor slabs
-    design.floors.forEach((floor, i) => {
-      if (floor.polygon.length < 3) return;
+    // ── 1. Clean Ground Site Pad (covers OSM ground & prevents clipping) ──
+    const sitePadShape = new THREE.Shape();
+    ccwPlot.forEach((pt, j) => {
+      if (j === 0) sitePadShape.moveTo(pt[0], pt[1]);
+      else sitePadShape.lineTo(pt[0], pt[1]);
+    });
+    sitePadShape.closePath();
 
-      // Skip floors above cutaway if section cut is active
-      if (state.sectionCutaway && state.selectedFloor !== null && i > state.selectedFloor) return;
+    const sitePadGeo = new THREE.ShapeGeometry(sitePadShape);
+    const sitePadMat = new THREE.MeshBasicMaterial({
+      color: 0x1e293b,
+      side: THREE.DoubleSide,
+      depthWrite: true,
+    });
+    const sitePadMesh = new THREE.Mesh(sitePadGeo, sitePadMat);
+    sitePadMesh.position.set(0, 0, 0.05);
+    sitePadMesh.userData = { isCustom: true };
+    scene.add(sitePadMesh);
 
-      const shape = new THREE.Shape();
-      floor.polygon.forEach((pt, j) => {
-        const x = pt[0] * scale;
-        const y = pt[1] * scale;
-        if (j === 0) shape.moveTo(x, y);
-        else shape.lineTo(x, y);
-      });
-      shape.closePath();
+    // Site boundary outline
+    const siteEdgeGeo = new THREE.EdgesGeometry(sitePadGeo);
+    const siteEdgeMat = new THREE.LineBasicMaterial({ color: 0x6366f1, linewidth: 2 });
+    const siteEdgeLine = new THREE.LineSegments(siteEdgeGeo, siteEdgeMat);
+    siteEdgeLine.position.set(0, 0, 0.08);
+    siteEdgeLine.userData = { isCustom: true };
+    scene.add(siteEdgeLine);
 
-      const geometry = new THREE.ExtrudeGeometry(shape, {
-        depth: floor.heightM * scale * 0.95,
-        bevelEnabled: false,
-      });
-
-      const isSelected = state.selectedFloor === i;
-      const material = new THREE.MeshPhongMaterial({
-        color: isSelected ? 0x818cf8 : 0x4f46e5,
+    // ── 2. OSR Open Space Footprint (Landscaped Green Zone) ──
+    if (state.showOSR || state.hoveredRule === 'osr' || state.hoveredRule === 'bca-open-space') {
+      const osrMat = new THREE.MeshBasicMaterial({
+        color: 0x10b981,
         transparent: true,
-        opacity: isSelected ? 0.95 : 0.75,
+        opacity: state.hoveredRule === 'osr' ? 0.45 : 0.22,
         side: THREE.DoubleSide,
       });
+      const osrMesh = new THREE.Mesh(sitePadGeo, osrMat);
+      osrMesh.position.set(0, 0, 0.06);
+      osrMesh.userData = { isCustom: true };
+      scene.add(osrMesh);
+    }
 
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(centerMerc.x, centerMerc.y, floor.elevationM * scale);
-      mesh.rotation.x = Math.PI / 2;
-      mesh.userData = { isBuilding: true, floorIndex: i };
-
-      scene.add(mesh);
-
-      // Add edge lines for each slab
-      const edges = new THREE.EdgesGeometry(geometry);
-      const lineMat = new THREE.LineBasicMaterial({ color: 0xa5b4fc, linewidth: 1 });
-      const lineSegments = new THREE.LineSegments(edges, lineMat);
-      lineSegments.position.copy(mesh.position);
-      lineSegments.rotation.copy(mesh.rotation);
-      lineSegments.userData = { isBuilding: true };
-      scene.add(lineSegments);
-    });
-
-    // Add setback guide planes if enabled
-    if (state.showSetbacks && state.evaluation && state.polygon.length >= 3) {
-      const plotMetric = polygonToMetric(anchor, state.polygon);
-      const ccwPlot = ensureCCW(plotMetric);
-      const groundFloor = design.floors[0];
-      if (groundFloor) {
-        // Setback boundary as a translucent plane at ground level
-        const setbackShape = new THREE.Shape();
+    // ── 3. Setback Boundaries Guide ──
+    if (state.showSetbacks || state.hoveredRule === 'setbacks' || state.hoveredRule === 'road-setback' || state.hoveredRule === 'side-rear-setback') {
+      const groundFloor = state.designA?.floors[0];
+      if (groundFloor && groundFloor.polygon.length >= 3) {
+        const sbShape = new THREE.Shape();
         groundFloor.polygon.forEach((pt, j) => {
-          const x = pt[0] * scale;
-          const y = pt[1] * scale;
-          if (j === 0) setbackShape.moveTo(x, y);
-          else setbackShape.lineTo(x, y);
+          if (j === 0) sbShape.moveTo(pt[0], pt[1]);
+          else sbShape.lineTo(pt[0], pt[1]);
         });
-        setbackShape.closePath();
+        sbShape.closePath();
 
-        const setbackGeo = new THREE.ShapeGeometry(setbackShape);
-        const setbackMat = new THREE.MeshBasicMaterial({
+        const sbGeo = new THREE.ShapeGeometry(sbShape);
+        const sbMat = new THREE.MeshBasicMaterial({
           color: 0x22c55e,
           transparent: true,
-          opacity: 0.15,
+          opacity: state.hoveredRule?.includes('setback') ? 0.35 : 0.12,
           side: THREE.DoubleSide,
         });
-        const setbackMesh = new THREE.Mesh(setbackGeo, setbackMat);
-        setbackMesh.position.set(centerMerc.x, centerMerc.y, 0.001);
-        setbackMesh.rotation.x = -Math.PI / 2;
-        setbackMesh.userData = { isBuilding: true };
-        scene.add(setbackMesh);
+        const sbMesh = new THREE.Mesh(sbGeo, sbMat);
+        sbMesh.position.set(0, 0, 0.09);
+        sbMesh.userData = { isCustom: true };
+        scene.add(sbMesh);
+
+        const sbEdgeGeo = new THREE.EdgesGeometry(sbGeo);
+        const sbEdgeMat = new THREE.LineBasicMaterial({
+          color: 0x4ade80,
+          linewidth: 2,
+        });
+        const sbEdgeLine = new THREE.LineSegments(sbEdgeGeo, sbEdgeMat);
+        sbEdgeLine.position.set(0, 0, 0.1);
+        sbEdgeLine.userData = { isCustom: true };
+        scene.add(sbEdgeLine);
       }
     }
 
-    // Height cap plane
-    if (state.showHeightCap && state.evaluation) {
-      const capHeight = state.evaluation.maxAllowedHeightM;
-      if (capHeight < 500) {
-        const capGeo = new THREE.PlaneGeometry(200 * scale, 200 * scale);
-        const capMat = new THREE.MeshBasicMaterial({
-          color: 0xef4444,
+    // ── 4. 23m Height Limit Cap Plane ──
+    if (state.showHeightCap || state.hoveredRule === 'height') {
+      const capHeight = 23.0; // Bangkok standard low-rise cap
+      const capGeo = new THREE.PlaneGeometry(160, 160);
+      const capMat = new THREE.MeshBasicMaterial({
+        color: 0xef4444,
+        transparent: true,
+        opacity: state.hoveredRule === 'height' ? 0.28 : 0.10,
+        side: THREE.DoubleSide,
+      });
+      const capMesh = new THREE.Mesh(capGeo, capMat);
+      capMesh.position.set(0, 0, capHeight);
+      capMesh.userData = { isCustom: true };
+      scene.add(capMesh);
+
+      const capEdges = new THREE.EdgesGeometry(capGeo);
+      const capEdgeMat = new THREE.LineBasicMaterial({ color: 0xf87171 });
+      const capLine = new THREE.LineSegments(capEdges, capEdgeMat);
+      capLine.position.set(0, 0, capHeight);
+      capLine.userData = { isCustom: true };
+      scene.add(capLine);
+    }
+
+    // ── 5. 2:1 Sky Exposure Cut Plane ──
+    if (state.showSkyPlane || state.hoveredRule === 'sky-plane') {
+      state.roadEdges.forEach((edgeIdx) => {
+        const p1 = ccwPlot[edgeIdx];
+        const p2 = ccwPlot[(edgeIdx + 1) % ccwPlot.length];
+        if (!p1 || !p2) return;
+
+        const [nx, ny] = edgeInwardNormal(p1, p2);
+        const rw = state.roadWidth;
+        const skySlope = 2.0; // 2:1 vertical to horizontal
+
+        // Oppsite road boundary: offset outward by rw
+        const oppP1: [number, number] = [p1[0] - nx * rw, p1[1] - ny * rw];
+        const oppP2: [number, number] = [p2[0] - nx * rw, p2[1] - ny * rw];
+
+        // Sloping plane rises to height H=50m, penetrating inward by H/2 = 25m
+        const topH = 45;
+        const topInward = topH / skySlope;
+        const topP1: [number, number] = [oppP1[0] + nx * topInward, oppP1[1] + ny * topInward];
+        const topP2: [number, number] = [oppP2[0] + nx * topInward, oppP2[1] + ny * topInward];
+
+        // Construct 3D quad plane
+        const skyGeo = new THREE.BufferGeometry();
+        const vertices = new Float32Array([
+          oppP1[0], oppP1[1], 0,
+          oppP2[0], oppP2[1], 0,
+          topP2[0], topP2[1], topH,
+
+          oppP1[0], oppP1[1], 0,
+          topP2[0], topP2[1], topH,
+          topP1[0], topP1[1], topH,
+        ]);
+        skyGeo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        skyGeo.computeVertexNormals();
+
+        const skyMat = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
           transparent: true,
-          opacity: 0.08,
+          opacity: state.hoveredRule === 'sky-plane' ? 0.35 : 0.14,
           side: THREE.DoubleSide,
         });
-        const capMesh = new THREE.Mesh(capGeo, capMat);
-        capMesh.position.set(centerMerc.x, centerMerc.y, capHeight * scale);
-        capMesh.userData = { isBuilding: true };
-        scene.add(capMesh);
-      }
+        const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+        skyMesh.userData = { isCustom: true };
+        scene.add(skyMesh);
+      });
+    }
+
+    // ── 6. Allowable Envelope Mode OR Active Design Massing ──
+    const design = state.activeDesign === 'b' ? state.designB : state.designA;
+
+    if (state.activeDesign === 'envelope') {
+      // Render the maximum allowable envelope as translucent glowing volume
+      const envFloors = state.designA?.floors ?? [];
+      envFloors.forEach((floor, i) => {
+        if (floor.polygon.length < 3) return;
+
+        const shape = new THREE.Shape();
+        floor.polygon.forEach((pt, j) => {
+          if (j === 0) shape.moveTo(pt[0], pt[1]);
+          else shape.lineTo(pt[0], pt[1]);
+        });
+        shape.closePath();
+
+        const geo = new THREE.ExtrudeGeometry(shape, {
+          depth: floor.heightM,
+          bevelEnabled: false,
+        });
+
+        const mat = new THREE.MeshPhongMaterial({
+          color: 0x06b6d4,
+          transparent: true,
+          opacity: 0.32,
+          side: THREE.DoubleSide,
+        });
+
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(0, 0, floor.elevationM);
+        mesh.userData = { isCustom: true, floorIndex: i };
+        scene.add(mesh);
+
+        const edges = new THREE.EdgesGeometry(geo);
+        const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x22d3ee }));
+        line.position.copy(mesh.position);
+        line.userData = { isCustom: true };
+        scene.add(line);
+      });
+    } else if (design && design.floors.length > 0) {
+      // Render architectural floor slabs for Design A or B
+      design.floors.forEach((floor, i) => {
+        if (floor.polygon.length < 3) return;
+
+        // Section Cutaway logic: hide or ghost floors above selectedFloor
+        const isCutawayHidden = state.sectionCutaway && state.selectedFloor !== null && i > state.selectedFloor;
+        if (isCutawayHidden) return;
+
+        const shape = new THREE.Shape();
+        floor.polygon.forEach((pt, j) => {
+          if (j === 0) shape.moveTo(pt[0], pt[1]);
+          else shape.lineTo(pt[0], pt[1]);
+        });
+        shape.closePath();
+
+        const geometry = new THREE.ExtrudeGeometry(shape, {
+          depth: floor.heightM * 0.94, // slight slab gap for architectural articulation
+          bevelEnabled: false,
+        });
+
+        const isSelected = state.selectedFloor === i;
+        const isDesignB = state.activeDesign === 'b';
+
+        // Architectural Studio Aesthetic: Slate & Indigo / Amber Gold for selected
+        const baseColor = isDesignB ? 0x0284c7 : 0x4f46e5;
+        const slabColor = isSelected ? 0xf59e0b : baseColor;
+
+        const material = new THREE.MeshPhongMaterial({
+          color: slabColor,
+          transparent: true,
+          opacity: isSelected ? 0.96 : 0.85,
+          shininess: 40,
+          side: THREE.DoubleSide,
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(0, 0, floor.elevationM);
+        mesh.userData = { isCustom: true, floorIndex: i };
+
+        scene.add(mesh);
+        threeRef.current!.buildingMeshes.push(mesh);
+
+        // Crisp architectural edge lines
+        const edgeGeo = new THREE.EdgesGeometry(geometry);
+        const lineMat = new THREE.LineBasicMaterial({
+          color: isSelected ? 0xfef08a : (isDesignB ? 0x7dd3fc : 0xa5b4fc),
+          linewidth: isSelected ? 2 : 1,
+        });
+        const line = new THREE.LineSegments(edgeGeo, lineMat);
+        line.position.copy(mesh.position);
+        line.userData = { isCustom: true };
+        scene.add(line);
+      });
     }
 
     map.triggerRepaint();
   }, [
-    state.activeDesign, state.designA, state.designB, state.polygon,
-    state.selectedFloor, state.sectionCutaway,
-    state.showSetbacks, state.showSkyPlane, state.showHeightCap, state.showOSR,
-    state.evaluation,
+    state.polygon,
+    state.roadEdges,
+    state.roadWidth,
+    state.activeDesign,
+    state.designA,
+    state.designB,
+    state.selectedFloor,
+    state.sectionCutaway,
+    state.showSetbacks,
+    state.showSkyPlane,
+    state.showHeightCap,
+    state.showOSR,
+    state.hoveredRule,
   ]);
 
-  // Camera animation on stage change
+  // ─── Camera Animation on Stage Switch ───
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -450,46 +690,45 @@ export function MapContainer() {
         pitch: preset.pitch,
         bearing: preset.bearing,
         zoom: preset.zoom,
-        duration: 800,
+        duration: 750,
       });
     }
   }, [state.stage]);
 
-  // Fly to preset plot
+  // ─── Fly to Preset Plot ───
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || state.polygon.length < 3) return;
+    if (!map || state.polygon.length < 3 || !state.activePresetId) return;
 
-    const center = state.polygon.reduce(
-      (acc, p) => [acc[0] + p[0] / state.polygon.length, acc[1] + p[1] / state.polygon.length] as LngLat,
-      [0, 0] as LngLat
-    );
-
+    const anchor = anchorAtCentroid(state.polygon);
     map.flyTo({
-      center: { lng: center[0], lat: center[1] },
-      zoom: 17,
-      pitch: 50,
-      bearing: -30,
-      duration: 1200,
+      center: [anchor.lngDeg, anchor.latDeg],
+      zoom: 17.2,
+      pitch: 52,
+      bearing: -32,
+      duration: 1100,
     });
   }, [state.activePresetId]);
-
-  // Handle edge clicks for road frontage
-  const handleEdgeClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    // Edge clicking is handled via MapLibre click events
-  }, []);
 
   return (
     <div
       ref={containerRef}
       data-testid="map-container"
       className="absolute inset-0 w-full h-full"
-      style={{ cursor: isDrawing ? 'crosshair' : 'grab' }}
+      style={{ cursor: isDrawing ? 'crosshair' : 'default' }}
     />
   );
 }
 
-function updateDrawingLine(map: maplibregl.Map) {
-  // This would update the drawing line in real-time
-  // Simplified for now — the polygon is set on close
+// ─── Geometric Helper: Point to Line Segment Distance (pixels) ───
+function distanceToSegment(
+  p: { x: number; y: number },
+  v: { x: number; y: number },
+  w: { x: number; y: number }
+): number {
+  const l2 = (v.x - w.x) ** 2 + (v.y - w.y) ** 2;
+  if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
+  let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
 }

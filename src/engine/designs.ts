@@ -8,7 +8,6 @@ import type {
 } from './types';
 import { BUILDING_TYPES, ZONE_YOR9 } from './types';
 import { polygonArea, ensureCCW, edgeLength } from './polygon';
-import { sqmToRaiNganWah } from './geo';
 import { generateFloors, checkRoadEligibility, computeCompliance } from './rules';
 
 /** Generate Design A: Maximum Yield Envelope */
@@ -16,49 +15,61 @@ export function generateDesignA(input: ZoningInput): DesignResult {
   const polygon = ensureCCW(input.polygon);
   const plotArea = polygonArea(polygon);
   const roadElig = checkRoadEligibility(input.edges, plotArea);
+  
+  // Design A maximizes permissible GFA up to statutory envelope and FAR limit
   const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig);
   
   return buildDesignResult(
     'max-yield',
     'Design A: Max-Yield Envelope',
-    'Maximizes permissible GFA within FAR, OSR, setbacks, and 2:1 sky plane.',
+    'Maximizes permissible GFA within FAR 7.0, OSR, statutory setbacks, and 2:1 sky exposure plane.',
     floors, polygon, plotArea, input,
   );
 }
 
-/** Generate Design B: Podium-Tower or Sub-EIA variant */
+/** Generate Design B: Podium + Slender Tower OR Sub-EIA Courtyard Block */
 export function generateDesignB(input: ZoningInput): DesignResult {
   const polygon = ensureCCW(input.polygon);
   const plotArea = polygonArea(polygon);
   const config = BUILDING_TYPES[input.buildingType];
   const roadElig = checkRoadEligibility(input.edges, plotArea);
 
-  // Decide variant based on plot/road conditions
   if (roadElig.highRiseAllowed && !config.maxHeightCap) {
-    // Podium + Slender Tower
-    // Use 70% of max GFA for a more generous open space design
-    const targetGFA = Math.min(roadElig.maxGFA, plotArea * ZONE_YOR9.maxFAR) * 0.7;
-    const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig, targetGFA);
+    // ── High-Rise Scenario: Podium + Slender Tower ──
+    // Floors 0 to 2: Podium base (retail / parking / amenities)
+    // Floors 3+: Slender tower inset by an extra 4m from all edges for light, ventilation, and rooftop terraces
+    const targetGFA = Math.min(roadElig.maxGFA, plotArea * ZONE_YOR9.maxFAR) * 0.78;
+    
+    const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig, {
+      targetGFA,
+      podiumFloors: 3,
+      towerInsetMeters: 4.0, // 4m inset creates slender tower profile
+    });
     
     return buildDesignResult(
       'podium-tower',
       'Design B: Podium + Slender Tower',
-      'Leaves generous landscaped open space above minimum OSR. Uses wider podium base with inset upper tower for light and ventilation.',
+      'Leaves generous landscaped open space above statutory OSR. Uses a 3-storey podium with an inset slender tower for daylight, cross-ventilation, and rooftop terrace.',
       floors, polygon, plotArea, input,
     );
   } else {
-    // Sub-EIA Courtyard Block: stay under 23m/80 units
+    // ── Low-Rise / Narrow-Soi Scenario: Sub-EIA Courtyard Block ──
+    // Keeps residential units below 80 and height <= 23m to bypass costly EIA review
     const maxUnits = 79;
-    const maxUsableGFA = maxUnits * 40 / 0.7; // ~4,514 sqm
+    const maxUsableGFA = (maxUnits * 40) / 0.7; // ~4,514 sqm GFA cap for 79 units
     const maxHeightCap = Math.min(23, roadElig.maxHeight);
-    const cappedRoadElig = { ...roadElig, maxHeight: maxHeightCap };
-    const targetGFA = Math.min(maxUsableGFA, plotArea * ZONE_YOR9.maxFAR);
-    const floors = generateFloors(polygon, input.edges, input.buildingType, cappedRoadElig, targetGFA);
+    const targetGFA = Math.min(maxUsableGFA, plotArea * ZONE_YOR9.maxFAR * 0.75);
+
+    const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig, {
+      targetGFA,
+      maxHeight: maxHeightCap,
+      groundInsetMeters: 2.0, // extra 2m garden setback creates courtyard open space
+    });
 
     return buildDesignResult(
       'sub-eia',
       'Design B: Sub-EIA Courtyard Block',
-      'Stays intentionally below the 23m / 80-unit EIA threshold for faster permitting. Leaves courtyard open space.',
+      'Fast-track permitting design: strictly caps estimated units at 79 and height at 23m to remain EIA-exempt. Features generous courtyard garden setbacks.',
       floors, polygon, plotArea, input,
     );
   }
@@ -105,7 +116,7 @@ function buildDesignResult(
     checks,
     eiaRequired,
     eiaReason: eiaRequired
-      ? (height > 23 ? 'Height > 23m (residential)' : `Estimated ${estimatedUnits} units ≥ 80`)
+      ? (height > 23 ? 'Residential building height > 23m' : `Estimated ${estimatedUnits} units ≥ 80 threshold`)
       : undefined,
   };
 }

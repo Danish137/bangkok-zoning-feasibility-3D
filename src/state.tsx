@@ -1,9 +1,10 @@
 // ─── App State & Context ───
 import React, { createContext, useContext, useReducer, type Dispatch } from 'react';
 import type {
-  LngLatPolygon, BuildingType, DesignVariant, PresetPlot,
+  LngLatPolygon, BuildingType, DesignVariant, PresetPlot, LngLat,
 } from './engine/types';
 import type { DesignResult, EvaluationResult } from './engine/types';
+import { PRESET_PLOTS } from './engine/presets';
 
 export type Stage = 'site' | 'building' | 'floor' | 'compliance' | 'report';
 
@@ -28,27 +29,33 @@ export interface AppState {
   showOSR: boolean;
   sectionCutaway: boolean;
 
+  // Interactive highlighting
+  hoveredRule: string | null;
+
   // Results (computed)
   designA: DesignResult | null;
   designB: DesignResult | null;
   evaluation: EvaluationResult | null;
 }
 
+const defaultPreset = PRESET_PLOTS[0]!;
+
 export const initialState: AppState = {
   stage: 'site',
-  polygon: [],
-  roadEdges: [],
-  roadWidth: 12,
-  buildingType: 'high-rise-condo',
-  activePresetId: null,
+  polygon: defaultPreset.polygon,
+  roadEdges: defaultPreset.roadEdges,
+  roadWidth: defaultPreset.roadWidth,
+  buildingType: defaultPreset.buildingType,
+  activePresetId: defaultPreset.id,
   activeDesign: 'a',
-  selectedFloor: null,
-  showEnvelope: true,
+  selectedFloor: 0,
+  showEnvelope: false,
   showSetbacks: true,
-  showSkyPlane: false,
+  showSkyPlane: true,
   showHeightCap: true,
-  showOSR: false,
+  showOSR: true,
   sectionCutaway: false,
+  hoveredRule: null,
   designA: null,
   designB: null,
   evaluation: null,
@@ -57,6 +64,7 @@ export const initialState: AppState = {
 export type AppAction =
   | { type: 'SET_STAGE'; stage: Stage }
   | { type: 'SET_POLYGON'; polygon: LngLatPolygon }
+  | { type: 'UPDATE_VERTEX'; index: number; coord: LngLat }
   | { type: 'SET_ROAD_EDGES'; roadEdges: number[] }
   | { type: 'TOGGLE_ROAD_EDGE'; edgeIndex: number }
   | { type: 'SET_ROAD_WIDTH'; width: number }
@@ -66,6 +74,7 @@ export type AppAction =
   | { type: 'SET_SELECTED_FLOOR'; floor: number | null }
   | { type: 'TOGGLE_GUIDE'; guide: 'envelope' | 'setbacks' | 'skyPlane' | 'heightCap' | 'osr' }
   | { type: 'TOGGLE_SECTION_CUTAWAY' }
+  | { type: 'SET_HOVERED_RULE'; rule: string | null }
   | { type: 'SET_RESULTS'; designA: DesignResult; designB: DesignResult; evaluation: EvaluationResult }
   | { type: 'CLEAR_RESULTS' };
 
@@ -75,6 +84,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, stage: action.stage };
     case 'SET_POLYGON':
       return { ...state, polygon: action.polygon, activePresetId: null };
+    case 'UPDATE_VERTEX': {
+      const nextPoly = [...state.polygon];
+      nextPoly[action.index] = action.coord;
+      return { ...state, polygon: nextPoly, activePresetId: null };
+    }
     case 'SET_ROAD_EDGES':
       return { ...state, roadEdges: action.roadEdges };
     case 'TOGGLE_ROAD_EDGE': {
@@ -96,6 +110,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         roadWidth: action.roadWidth,
         buildingType: action.buildingType,
         activePresetId: action.presetId,
+        selectedFloor: 0,
       };
     case 'SET_ACTIVE_DESIGN':
       return { ...state, activeDesign: action.design };
@@ -113,6 +128,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case 'TOGGLE_SECTION_CUTAWAY':
       return { ...state, sectionCutaway: !state.sectionCutaway };
+    case 'SET_HOVERED_RULE':
+      return { ...state, hoveredRule: action.rule };
     case 'SET_RESULTS':
       return { ...state, designA: action.designA, designB: action.designB, evaluation: action.evaluation };
     case 'CLEAR_RESULTS':

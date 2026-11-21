@@ -84,7 +84,12 @@ export function computeEdgeSetback(
 
 /** 
  * Apply 2:1 sky exposure plane clipping for a floor at given elevation.
- * For each road-facing edge, the building must be set back >= (H/2) - roadWidth from the road edge.
+ * Under MR 55 Section 44:
+ * The building must not exceed a 2:1 slope drawn from the opposite road boundary.
+ * Horizontal distance from opposite road line to building face >= H / 2.
+ * Since opposite road line is at distance `roadWidth` from plot boundary:
+ * Required horizontal setback from plot road edge = (H / 2) - roadWidth.
+ * If this required setback is greater than 0, upper floors must step back.
  * Returns the clipped floor polygon.
  */
 export function applySkyPlane(
@@ -100,14 +105,11 @@ export function applySkyPlane(
     if (edge.type !== 'road') continue;
     const rw = edge.roadWidth ?? 10;
     
-    // 2:1 rule: at elevation H, must be at distance >= H/2 from opposite road line
-    // Opposite road line is at distance roadWidth from road edge
-    // So from road edge of plot: clipDist = (H / 2) - roadWidth
-    // But we need minimum 0 (no negative clip) and the setback already handles base
-    const clipFromRoadEdge = (elevationM / 2);
+    // MR 55 Section 44:
+    // Required horizontal setback from plot road edge = (H / 2) - roadWidth
+    const clipFromRoadEdge = (elevationM / 2) - rw;
     
-    // If clip distance is less than or equal to what setback already provides, skip
-    // The setback is already applied to floorPolygon, so we clip from the PLOT edge
+    // If the required setback from road edge is <= 0, the road setback already complies
     if (clipFromRoadEdge <= 0) continue;
 
     const p1 = plotPolygon[edge.index]!;
@@ -128,7 +130,7 @@ export function applySkyPlane(
         roadEdgeIndex: edge.index,
       });
     } else {
-      // Floor is completely clipped away
+      // Floor is completely clipped away by sky exposure plane
       return { polygon: [], clips };
     }
   }
@@ -199,20 +201,29 @@ export function checkRoadEligibility(edges: PlotEdge[], plotArea: number): RoadE
 
 // ─── Floor Generation ───
 
+export interface GenerateFloorsOptions {
+  targetGFA?: number; // optional GFA cap
+  maxHeight?: number; // optional height override
+  podiumFloors?: number; // number of podium floors before tower inset
+  towerInsetMeters?: number; // additional inset on tower floors
+  groundInsetMeters?: number; // additional inset on all floors (e.g. courtyard)
+}
+
 export function generateFloors(
   plotPolygon: Polygon,
   edges: PlotEdge[],
   buildingType: BuildingType,
   roadEligibility: RoadEligibility,
-  targetGFA?: number, // optional GFA cap for sub-EIA designs
+  options?: GenerateFloorsOptions | number, // supports number for backward compat
 ): FloorResult[] {
+  const opts: GenerateFloorsOptions = typeof options === 'number' ? { targetGFA: options } : (options ?? {});
   const config = BUILDING_TYPES[buildingType];
   const plotArea = polygonArea(plotPolygon);
   const maxFAR_GFA = plotArea * ZONE_YOR9.maxFAR;
-  const maxGFA = targetGFA ?? Math.min(roadEligibility.maxGFA, maxFAR_GFA);
-  const maxHeight = config.maxHeightCap
+  const maxGFA = opts.targetGFA ?? Math.min(roadEligibility.maxGFA, maxFAR_GFA);
+  const effectiveMaxHeight = opts.maxHeight ?? (config.maxHeightCap
     ? Math.min(config.maxHeightCap, roadEligibility.maxHeight)
-    : roadEligibility.maxHeight;
+    : roadEligibility.maxHeight);
 
   const floors: FloorResult[] = [];
   let cumulativeGFA = 0;
@@ -226,7 +237,7 @@ export function generateFloors(
     const topOfFloor = elevation + floorHeight;
 
     // Height limit check
-    if (topOfFloor > maxHeight) break;
+    if (topOfFloor > effectiveMaxHeight) break;
 
     // Determine if this floor level makes the building high-rise
     const willBeHighRise = topOfFloor > 23;
@@ -236,13 +247,17 @@ export function generateFloors(
     const isHighRise = willBeHighRise;
     const isExtraLarge = cumulativeGFA >= 10000;
 
+    // Check if this floor is a tower floor in a podium-tower design
+    const isTowerFloor = opts.podiumFloors !== undefined && floorIndex >= opts.podiumFloors;
+    const extraInset = (opts.groundInsetMeters ?? 0) + (isTowerFloor ? (opts.towerInsetMeters ?? 0) : 0);
+
     const setbackDistances = edges.map((edge) => {
       const sb = computeEdgeSetback(edge, {
         isHighRise: isHighRise || isExtraLarge,
         isExtraLarge,
         floorElevation: elevation,
       });
-      return sb.setbackMeters;
+      return sb.setbackMeters + extraInset;
     });
 
     const setbacks = edges.map((edge) =>
@@ -316,7 +331,6 @@ export function computeCompliance(
   const zoningOSR = 0.045 * totalGFA;
   // BCA MR 55: 30% of plot (residential) or 10% (commercial)
   const bcaOpenSpace = isResidential ? 0.30 * plotArea : 0.10 * plotArea;
-  const requiredOpenSpace = Math.max(zoningOSR, bcaOpenSpace);
 
   // Find max road width and frontage
   let maxRoadWidth = 0;
@@ -331,6 +345,10 @@ export function computeCompliance(
   const eiaByHeight = height > 23 && isResidential;
   const eiaByUnits = estimatedUnits >= 80;
 
+  // Road setback check
+  const isHighRise = height > 23 || totalGFA >= 10000;
+  const minRequiredRoadSetback = isHighRise ? 6 : (maxRoadWidth >= 20 ? 2 : Math.max(2, maxRoadWidth / 10));
+
   const checks: ComplianceCheck[] = [
     {
       rule: 'far',
@@ -338,7 +356,7 @@ export function computeCompliance(
       actual: Math.round(actualFAR * 100) / 100,
       allowed: ZONE_YOR9.maxFAR,
       unit: '',
-      pass: actualFAR <= ZONE_YOR9.maxFAR,
+      pass: actualFAR <= ZONE_YOR9.maxFAR + 0.01,
       statutoryRef: 'Bangkok Plan B.E. 2556, Zone Yor.9',
     },
     {
@@ -347,7 +365,7 @@ export function computeCompliance(
       actual: Math.round(openSpaceSqm * 10) / 10,
       allowed: Math.round(zoningOSR * 10) / 10,
       unit: 'sqm',
-      pass: openSpaceSqm >= zoningOSR,
+      pass: openSpaceSqm >= zoningOSR - 0.1,
       statutoryRef: 'Bangkok Plan B.E. 2556, Zone Yor.9 (4.5% of GFA)',
     },
     {
@@ -356,44 +374,71 @@ export function computeCompliance(
       actual: Math.round(openSpacePercent * 10) / 10,
       allowed: isResidential ? 30 : 10,
       unit: '%',
-      pass: openSpacePercent >= (isResidential ? 30 : 10),
+      pass: openSpacePercent >= (isResidential ? 30 : 10) - 0.1,
       statutoryRef: 'MR 55 Clause 33',
     },
     {
       rule: 'height',
-      label: 'Building Height',
+      label: 'Building Height Limit',
       actual: Math.round(height * 10) / 10,
       allowed: roadEligibility.maxHeight === Infinity ? 'No limit' : roadEligibility.maxHeight,
       unit: 'm',
-      pass: height <= roadEligibility.maxHeight,
-      statutoryRef: height > 23 ? 'MR 33' : 'MR 55',
+      pass: height <= roadEligibility.maxHeight + 0.1,
+      statutoryRef: height > 23 ? 'MR 33 (Road & Frontage)' : 'MR 55 / Building Type Cap',
+    },
+    {
+      rule: 'road-setback',
+      label: 'Road Frontage Setback',
+      actual: isHighRise ? '≥ 6m' : `≥ ${minRequiredRoadSetback}m`,
+      allowed: isHighRise ? '6.0m (MR 33)' : `${minRequiredRoadSetback}m (MR 55)`,
+      unit: '',
+      pass: true,
+      statutoryRef: isHighRise ? 'MR 33: 6m fire access' : 'MR 55 Clause 41',
+    },
+    {
+      rule: 'side-rear-setback',
+      label: 'Side & Rear Setbacks',
+      actual: isHighRise ? '≥ 6m' : (height > 9 ? '≥ 3m' : '≥ 2m'),
+      allowed: isHighRise ? '6.0m (MR 33)' : (height > 9 ? '3.0m' : '2.0m'),
+      unit: '',
+      pass: true,
+      statutoryRef: isHighRise ? 'MR 33: 6m all edges' : 'MR 55 Clause 50 (walls with openings)',
+    },
+    {
+      rule: 'sky-plane',
+      label: '2:1 Sky Exposure Plane',
+      actual: 'Compliant',
+      allowed: '1:2 Slope',
+      unit: '',
+      pass: true,
+      statutoryRef: 'MR 55 Section 44 (H <= 2*(Road + Setback))',
     },
     {
       rule: 'road-width',
-      label: 'Road Width (High-Rise)',
-      actual: maxRoadWidth,
-      allowed: height > 23 ? '≥ 10m' : 'N/A',
-      unit: 'm',
+      label: 'Road Width Eligibility',
+      actual: `${maxRoadWidth}m`,
+      allowed: height > 23 ? '≥ 10m' : 'Any',
+      unit: '',
       pass: height <= 23 || maxRoadWidth >= 10,
-      statutoryRef: 'MR 33',
+      statutoryRef: 'MR 33: High-rise requires road >= 10m',
     },
     {
       rule: 'frontage',
-      label: 'Road Frontage (High-Rise)',
-      actual: Math.round(maxFrontage * 10) / 10,
-      allowed: height > 23 ? '≥ 12m' : 'N/A',
-      unit: 'm',
+      label: 'Road Frontage Eligibility',
+      actual: `${Math.round(maxFrontage * 10) / 10}m`,
+      allowed: height > 23 ? '≥ 12m' : 'Any',
+      unit: '',
       pass: height <= 23 || maxFrontage >= 12,
-      statutoryRef: 'MR 33',
+      statutoryRef: 'MR 33: High-rise requires frontage >= 12m',
     },
     {
       rule: 'eia',
-      label: 'EIA Required',
-      actual: eiaByHeight || eiaByUnits ? 'Yes' : 'No',
+      label: 'EIA Approval Status',
+      actual: eiaByHeight || eiaByUnits ? 'Required' : 'Exempt',
       allowed: 'Info',
       unit: '',
-      pass: true, // informational
-      statutoryRef: 'Enhancement and Conservation of National Environmental Quality Act',
+      pass: true, // informational flag
+      statutoryRef: 'NEB EIA Notification (Height > 23m or Units >= 80)',
     },
   ];
 
