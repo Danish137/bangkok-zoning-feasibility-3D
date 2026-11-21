@@ -444,15 +444,26 @@ export function MapContainer() {
       const clickedLngLat: LngLat = [e.lngLat.lng, e.lngLat.lat];
 
       // 1. Drawing mode
-      if (isDrawing || currentState.polygon.length < 3) {
+      if (currentState.isDrawing || isDrawing || currentState.polygon.length < 3) {
         if (drawingRef.current.length >= 3) {
           const first = drawingRef.current[0]!;
           const firstPixel = map.project(new maplibregl.LngLat(first[0], first[1]));
           const dist = Math.hypot(firstPixel.x - e.point.x, firstPixel.y - e.point.y);
-          if (dist < 25) {
-            dispatch({ type: 'SET_POLYGON', polygon: [...drawingRef.current] });
+          if (dist < 30) {
+            const finalPoly = [...drawingRef.current];
             drawingRef.current = [];
             setIsDrawing(false);
+            dispatch({ type: 'FINISH_DRAWING', polygon: finalPoly });
+
+            // Center camera on newly drawn plot
+            const anchor = anchorAtCentroid(finalPoly);
+            map.flyTo({
+              center: [anchor.lngDeg, anchor.latDeg],
+              zoom: 17.5,
+              pitch: 52,
+              bearing: -28,
+              duration: 900,
+            });
             return;
           }
         }
@@ -536,7 +547,50 @@ export function MapContainer() {
     const map = mapRef.current;
     if (!map || !mapLoaded || !map.isStyleLoaded()) return;
 
+    if (state.isDrawing) {
+      drawingRef.current = [];
+      setIsDrawing(true);
+      (map.getSource('drawing-line') as maplibregl.GeoJSONSource)?.setData({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [] },
+        properties: {},
+      });
+      (map.getSource('plot-polygon') as maplibregl.GeoJSONSource)?.setData({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [[]] },
+        properties: {},
+      });
+      (map.getSource('plot-vertices') as maplibregl.GeoJSONSource)?.setData({
+        type: 'FeatureCollection',
+        features: [],
+      });
+      (map.getSource('road-edges') as maplibregl.GeoJSONSource)?.setData({
+        type: 'FeatureCollection',
+        features: [],
+      });
+      map.triggerRepaint();
+      return;
+    }
+
     const poly = state.polygon;
+    if (poly.length < 3) {
+      (map.getSource('plot-polygon') as maplibregl.GeoJSONSource)?.setData({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [[]] },
+        properties: {},
+      });
+      (map.getSource('plot-vertices') as maplibregl.GeoJSONSource)?.setData({
+        type: 'FeatureCollection',
+        features: [],
+      });
+      (map.getSource('road-edges') as maplibregl.GeoJSONSource)?.setData({
+        type: 'FeatureCollection',
+        features: [],
+      });
+      map.triggerRepaint();
+      return;
+    }
+
     if (poly.length >= 3) {
       const closedCoords = [...poly, poly[0]!];
       (map.getSource('plot-polygon') as maplibregl.GeoJSONSource)?.setData({
@@ -626,10 +680,57 @@ export function MapContainer() {
       } catch (err) {
         console.debug('OSM building filter:', err);
       }
+
+      // Check for road right-of-way intersections
+      try {
+        const roadLayers = (map.getStyle().layers || [])
+          .filter((l) => l.id.includes('road') || l.id.includes('highway') || l.id.includes('tunnel'))
+          .map((l) => l.id);
+
+        const roadFeatures = map.queryRenderedFeatures(undefined, { layers: roadLayers });
+        let encroachingRoad: string | null = null;
+        let count = 0;
+
+        for (const rf of roadFeatures) {
+          if (!rf.geometry) continue;
+          const geom = rf.geometry as any;
+          const lines = geom.type === 'LineString' ? [geom.coordinates] : (geom.type === 'MultiLineString' ? geom.coordinates : []);
+          for (const line of lines) {
+            for (let i = 0; i < line.length - 1; i++) {
+              const r1 = line[i] as [number, number];
+              const r2 = line[i + 1] as [number, number];
+              for (let j = 0; j < poly.length; j++) {
+                const p1 = poly[j]!;
+                const p2 = poly[(j + 1) % poly.length]!;
+                if (segmentsCross(r1, r2, p1, p2)) {
+                  count++;
+                  const name = rf.properties?.name || rf.properties?.name_en;
+                  if (name) encroachingRoad = name;
+                  break;
+                }
+              }
+              if (encroachingRoad) break;
+            }
+            if (encroachingRoad) break;
+          }
+          if (encroachingRoad) break;
+        }
+
+        if (count > 0) {
+          dispatch({
+            type: 'SET_ROAD_ENCROACHMENT',
+            encroachment: { roadName: encroachingRoad || 'Mapped Street', count },
+          });
+        } else if (stateRef.current.roadEncroachment !== null) {
+          dispatch({ type: 'SET_ROAD_ENCROACHMENT', encroachment: null });
+        }
+      } catch (err) {
+        console.debug('Road encroachment check:', err);
+      }
     }
 
     map.triggerRepaint();
-  }, [mapLoaded, state.polygon, state.roadEdges]);
+  }, [mapLoaded, state.polygon, state.roadEdges, state.isDrawing]);
 
   // ─── 3. Update Three.js 3D Massing & Regulatory Guides ───
   useEffect(() => {
@@ -994,4 +1095,15 @@ function distanceToSegment(
   let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
+}
+
+function segmentsCross(
+  p1: [number, number],
+  p2: [number, number],
+  p3: [number, number],
+  p4: [number, number]
+): boolean {
+  const ccw = (a: [number, number], b: [number, number], c: [number, number]) =>
+    (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0]);
+  return ccw(p1, p3, p4) !== ccw(p2, p3, p4) && ccw(p1, p2, p3) !== ccw(p1, p2, p4);
 }

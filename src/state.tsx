@@ -16,6 +16,10 @@ export interface AppState {
   // Navigation
   stage: Stage;
 
+  // Drawing mode & Warnings
+  isDrawing: boolean;
+  roadEncroachment: { roadName?: string; count: number } | null;
+
   // Plot
   polygon: LngLatPolygon;
   roadEdges: number[];
@@ -77,6 +81,8 @@ const initialResults = computeInitialPresetResults();
 
 export const initialState: AppState = {
   stage: 'site',
+  isDrawing: false,
+  roadEncroachment: null,
   polygon: defaultPreset.polygon,
   roadEdges: defaultPreset.roadEdges,
   roadWidth: defaultPreset.roadWidth,
@@ -98,6 +104,11 @@ export const initialState: AppState = {
 
 export type AppAction =
   | { type: 'SET_STAGE'; stage: Stage }
+  | { type: 'START_DRAWING' }
+  | { type: 'CANCEL_DRAWING' }
+  | { type: 'FINISH_DRAWING'; polygon: LngLatPolygon }
+  | { type: 'CLEAR_PLOT' }
+  | { type: 'SET_ROAD_ENCROACHMENT'; encroachment: { roadName?: string; count: number } | null }
   | { type: 'SET_POLYGON'; polygon: LngLatPolygon }
   | { type: 'UPDATE_VERTEX'; index: number; coord: LngLat }
   | { type: 'SET_ROAD_EDGES'; roadEdges: number[] }
@@ -117,6 +128,54 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'SET_STAGE':
       return { ...state, stage: action.stage };
+    case 'START_DRAWING':
+      return {
+        ...state,
+        isDrawing: true,
+        polygon: [],
+        roadEdges: [],
+        activePresetId: null,
+        designA: null,
+        designB: null,
+        evaluation: null,
+        selectedFloor: 0,
+        stage: 'site',
+        roadEncroachment: null,
+      };
+    case 'CANCEL_DRAWING':
+      return {
+        ...state,
+        isDrawing: false,
+        polygon: state.polygon.length >= 3 ? state.polygon : defaultPreset.polygon,
+        roadEdges: state.polygon.length >= 3 ? state.roadEdges : defaultPreset.roadEdges,
+        activePresetId: state.polygon.length >= 3 ? state.activePresetId : defaultPreset.id,
+      };
+    case 'FINISH_DRAWING': {
+      const normalized = normalizePolygonWinding(action.polygon, [0]);
+      return {
+        ...state,
+        isDrawing: false,
+        polygon: normalized.vertices,
+        roadEdges: normalized.roadEdges.length > 0 ? normalized.roadEdges : [0],
+        activePresetId: null,
+        selectedFloor: 0,
+      };
+    }
+    case 'CLEAR_PLOT':
+      return {
+        ...state,
+        polygon: [],
+        roadEdges: [],
+        activePresetId: null,
+        designA: null,
+        designB: null,
+        evaluation: null,
+        selectedFloor: 0,
+        isDrawing: false,
+        roadEncroachment: null,
+      };
+    case 'SET_ROAD_ENCROACHMENT':
+      return { ...state, roadEncroachment: action.encroachment };
     case 'SET_POLYGON': {
       const normalized = normalizePolygonWinding(action.polygon, state.roadEdges);
       return { ...state, polygon: normalized.vertices, roadEdges: normalized.roadEdges, activePresetId: null };

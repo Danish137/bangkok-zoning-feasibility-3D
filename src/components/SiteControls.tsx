@@ -12,6 +12,68 @@ export function SiteControls() {
 
   return (
     <div data-testid="site-controls" className="flex flex-col gap-4 text-xs">
+      {/* 0. Custom Plot Drawing & Management */}
+      <Section title="Plot Workflow & Custom Drawing">
+        <div className="flex flex-col gap-2">
+          {!state.isDrawing ? (
+            <div className="flex gap-2">
+              <button
+                data-testid="draw-custom-plot-btn"
+                onClick={() => dispatch({ type: 'START_DRAWING' })}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-md transition-all active:scale-95"
+              >
+                <span>✏️</span>
+                <span>Draw Custom Plot</span>
+              </button>
+              <button
+                data-testid="clear-plot-btn"
+                onClick={() => dispatch({ type: 'CLEAR_PLOT' })}
+                className="px-3 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60 font-medium transition-all"
+                title="Clear current plot and calculations"
+              >
+                <span>🗑️</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2 bg-indigo-950/40 border border-indigo-500/50 rounded-xl p-3 animate-pulse">
+              <div className="font-semibold text-indigo-300 flex items-center gap-1.5 text-xs">
+                <span>📍</span> Drawing Mode Active
+              </div>
+              <div className="text-[11px] text-slate-300 leading-snug">
+                Click anywhere on the map in Zone Yor.9 to place vertices. Click near your starting vertex to close the polygon.
+              </div>
+              <div className="flex gap-2 mt-1">
+                <button
+                  data-testid="cancel-drawing-btn"
+                  onClick={() => dispatch({ type: 'CANCEL_DRAWING' })}
+                  className="flex-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Road Encroachment Advisory Warning */}
+          {state.roadEncroachment && (
+            <div
+              data-testid="road-encroachment-warning"
+              className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 text-xs flex flex-col gap-1 shadow-lg"
+            >
+              <div className="font-semibold text-amber-400 flex items-center gap-1.5 text-[11px]">
+                <span>⚠️</span> Public Road Right-of-Way Advisory
+              </div>
+              <div className="text-[10px] text-amber-200/90 leading-relaxed">
+                Plot boundary intersects mapped road centerline ({state.roadEncroachment.roadName || 'Soi / Street'}). Under Building Control Act Sec. 41, building footprints must not encroach on public rights-of-way.
+              </div>
+              <div className="text-[9px] text-amber-400/70 mt-0.5 italic">
+                Note: OpenStreetMap street lines are indicative urban context, not legally certified cadastral parcel surveys.
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
       {/* 1. Bangkok Preset Plots */}
       <Section title="Zone Yor.9 Preset Plots">
         <div className="flex flex-col gap-1.5">

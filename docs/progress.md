@@ -46,3 +46,12 @@
 - [x] Live global state attached to `window.__BANGKOK_ZONING_STATE__`
 - [x] TypeScript clean compilation (`tsc --noEmit` exits with 0 errors)
 - [x] Optimized Vite production build with manual chunk splitting for MapLibre, Three.js, and React vendor
+
+## Phase 5: Plot Reset, Road Safety & Cadastral Verification ✅
+- [x] Independent "Draw Custom Plot" / "Clear Plot" workflow with full state reset across any location in Zone Yor.9
+- [x] Polygon winding normalization with exact CCW edge-index mapping: `(n - 2 - i + n) % n`
+- [x] Public Road Right-of-Way Advisory: detects polygon intersections with OpenStreetMap road centerlines via `segmentsCross` and displays BCA Section 41 warning
+- [x] Cadastral disclaimer: Explicit notice that OSM road lines represent network centerlines, not certified cadastral parcel surveys
+- [x] Verified independent plot drawing at Sukhumvit Soi 53 (`[100.5749, 13.7280]`) and Phrom Phong Soi 39 (`[100.5699, 13.7341]`)
+- [x] Vitest 41/41 unit tests passing with zero regressions
+

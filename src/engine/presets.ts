@@ -1,20 +1,20 @@
 // ─── Preset Bangkok Plots (Zone Yor.9) ───
 import type { PresetPlot, LngLatPolygon } from './types';
 
-/** Preset 1: L-shaped plot on a narrow 8m Sukhumvit soi (Soi Thonglor area) */
+/** Preset 1: L-shaped plot on a narrow 8m Sukhumvit soi (North side of Soi Thong Lo 9) */
 const PRESET_L_SHAPE: PresetPlot = {
   id: 'l-shape-soi-8m',
   label: 'L-Shape on 8m Soi',
-  description: 'L-shaped plot on a narrow 8m Sukhumvit soi near Thonglor',
+  description: 'L-shaped plot on north side of 8m Sukhumvit soi (Thonglor 9)',
   polygon: [
-    [100.5790, 13.7312],  // SW corner on Soi Thong Lo 9
-    [100.5794, 13.7312],  // SE corner on Soi Thong Lo 9
-    [100.5794, 13.7316],  // East step
-    [100.5792, 13.7316],  // Inner corner
-    [100.5792, 13.7320],  // NE corner
-    [100.5790, 13.7320],  // NW corner
+    [100.5790, 13.7316],  // SW corner fronting Soi Thong Lo 9
+    [100.5794, 13.7316],  // SE corner fronting Soi Thong Lo 9
+    [100.5794, 13.7320],  // East step
+    [100.5792, 13.7320],  // Inner corner
+    [100.5792, 13.7324],  // NE corner
+    [100.5790, 13.7324],  // NW corner
   ],
-  roadEdges: [0],  // Edge 0 (SW to SE) directly faces the 8m soi
+  roadEdges: [0],  // Edge 0 (SW to SE) directly fronts the 8m soi
   roadWidth: 8,
   buildingType: 'low-rise-condo',
 };
