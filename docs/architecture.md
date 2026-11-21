@@ -37,7 +37,10 @@ App
 - Shares MapLibre's WebGL2 context: `new THREE.WebGLRenderer({ canvas, context: gl })`
 - `renderer.resetState()` before every `renderer.render(scene, camera)`
 - Never clears MapLibre's buffers; `renderer.autoClear = false`
-- Camera sync: `camera.projectionMatrix` from MapLibre's render matrix × MercatorCoordinate transform
+- Matrix derivation: MapLibre GL JS v5 `defaultProjectionData.mainMatrix` is used as the normalized [0, 1] Mercator-to-Clip matrix. `localToMercator` translates from centroid Mercator and scales by `meterScale` with inverted Y scale.
+- Camera projection: `camera.projectionMatrix = mercatorToClip.multiply(localToMercator)` with `camera.matrixAutoUpdate = false`.
+- Frustum culling: Set `obj.frustumCulled = false` across all custom objects so MapLibre's clip planes do not prematurely discard Three.js geometry.
+- Context building management: Intersecting OpenFreeMap `building-3d` features on the active plot are queried and filtered out via `map.setFilter('building-3d', ...)` on MapLibre `'idle'` events to prevent Z-fighting.
 - Repaint on state/camera/hover change only (no idle loop)
 
 ## Cloudflare Pages Routing

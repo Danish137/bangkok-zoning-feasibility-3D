@@ -9,61 +9,82 @@ export function DesignSelector() {
 
   const designs = [
     { key: 'a' as const, label: 'Design A', subtitle: designA?.label ?? 'Max-Yield Envelope', data: designA },
-    { key: 'b' as const, label: 'Design B', subtitle: designB?.label ?? 'Alternative', data: designB },
+    { key: 'b' as const, label: 'Design B', subtitle: designB?.label ?? 'Alternative Option', data: designB },
     { key: 'envelope' as const, label: 'Envelope', subtitle: 'Allowable Building Volume', data: null },
   ];
 
   const guides = [
-    { key: 'setbacks' as const, label: 'Setback Boundaries', active: state.showSetbacks },
-    { key: 'skyPlane' as const, label: '2:1 Sky Plane', active: state.showSkyPlane },
-    { key: 'heightCap' as const, label: 'Height Cap', active: state.showHeightCap },
-    { key: 'osr' as const, label: 'OSR Footprint', active: state.showOSR },
+    { key: 'setbacks' as const, label: 'Setback Boundaries (MR 33/55)', active: state.showSetbacks, color: 'bg-emerald-400' },
+    { key: 'skyPlane' as const, label: '2:1 Sky Exposure Plane (MR 55)', active: state.showSkyPlane, color: 'bg-amber-400' },
+    { key: 'heightCap' as const, label: '23m Height Limit Cap', active: state.showHeightCap, color: 'bg-rose-400' },
+    { key: 'osr' as const, label: 'OSR Open Space Footprint', active: state.showOSR, color: 'bg-teal-400' },
   ];
 
   return (
-    <div data-testid="design-selector" className="flex flex-col gap-4">
-      <Section title="Design Options">
-        <div className="flex flex-col gap-1.5">
-          {designs.map((d) => (
-            <button
-              key={d.key}
-              data-testid={`design-${d.key}`}
-              onClick={() => dispatch({ type: 'SET_ACTIVE_DESIGN', design: d.key })}
-              className={`text-left px-3 py-2 rounded-lg text-xs transition-all ${
-                activeDesign === d.key
-                  ? 'bg-indigo-500/20 border border-indigo-500/50 text-indigo-300'
-                  : 'bg-neutral-800 border border-neutral-700 text-neutral-300 hover:border-neutral-500'
-              }`}
-            >
-              <div className="font-medium">{d.label}</div>
-              <div className="text-neutral-500 text-[10px] mt-0.5">{d.subtitle}</div>
-              {d.data && (
-                <div className="flex gap-3 mt-1 text-[10px] text-neutral-400">
-                  <span>GFA: {d.data.totalGFA.toLocaleString()} sqm</span>
-                  <span>FAR: {d.data.actualFAR}</span>
-                  <span>{d.data.floorCount}F</span>
+    <div data-testid="design-selector" className="flex flex-col gap-4 text-xs">
+      {/* Design Options */}
+      <Section title="Concept Massing Options">
+        <div className="flex flex-col gap-2">
+          {designs.map((d) => {
+            const isSelected = activeDesign === d.key;
+            return (
+              <button
+                key={d.key}
+                data-testid={`design-${d.key}`}
+                onClick={() => dispatch({ type: 'SET_ACTIVE_DESIGN', design: d.key })}
+                className={`text-left p-3 rounded-xl border transition-all ${
+                  isSelected
+                    ? 'bg-indigo-600/25 border-indigo-500 text-white shadow-md'
+                    : 'bg-slate-800/50 border-slate-700/60 text-slate-300 hover:bg-slate-800 hover:text-white'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-slate-100">{d.label}</span>
+                  {d.data && (
+                    <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800/40">
+                      FAR {d.data.actualFAR}
+                    </span>
+                  )}
                 </div>
-              )}
-            </button>
-          ))}
+                <div className="text-slate-400 text-[10px] leading-snug">{d.subtitle}</div>
+                {d.data && (
+                  <div className="grid grid-cols-3 gap-1 mt-2 pt-2 border-t border-slate-700/40 text-[10px] font-mono text-slate-300">
+                    <div>
+                      <span className="text-slate-500 text-[9px] block">GFA</span>
+                      {d.data.totalGFA.toLocaleString()} m²
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[9px] block">STOREYS</span>
+                      {d.data.floorCount}F ({d.data.heightM}m)
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[9px] block">OPEN SPACE</span>
+                      {d.data.openSpacePercent}%
+                    </div>
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
       </Section>
 
-      <Section title="3D Regulatory Guides">
-        <div className="flex flex-col gap-1">
+      {/* 3D Regulatory Guides */}
+      <Section title="3D Regulatory Constraint Planes">
+        <div className="flex flex-col gap-1.5">
           {guides.map((g) => (
             <button
               key={g.key}
               data-testid={`guide-${g.key}`}
               onClick={() => dispatch({ type: 'TOGGLE_GUIDE', guide: g.key })}
-              className={`flex items-center justify-between px-3 py-1.5 rounded-lg text-xs transition-all ${
+              className={`flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left ${
                 g.active
-                  ? 'bg-neutral-700/50 text-white'
-                  : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'
+                  ? 'bg-slate-800/80 border-slate-600 text-white'
+                  : 'bg-slate-800/30 border-slate-700/40 text-slate-400 hover:text-slate-200'
               }`}
             >
-              <span>{g.label}</span>
-              <span className={`w-2 h-2 rounded-full ${g.active ? 'bg-green-400' : 'bg-neutral-600'}`} />
+              <span className="text-[11px]">{g.label}</span>
+              <span className={`w-2.5 h-2.5 rounded-full transition-transform ${g.active ? `${g.color} shadow-sm shadow-current scale-110` : 'bg-slate-600'}`} />
             </button>
           ))}
         </div>
@@ -71,14 +92,12 @@ export function DesignSelector() {
 
       {/* Quick Metrics */}
       {state.evaluation && (
-        <Section title="Plot Metrics">
+        <Section title="Plot Diagnostics">
           <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-            <Metric label="Plot Area" value={`${state.evaluation.plotAreaSqm.toLocaleString()} sqm`} />
-            <Metric label="Thai Area" value={state.evaluation.plotAreaRaiNganWah} />
-            <Metric label="Frontage" value={`${state.evaluation.frontageM}m`} />
-            <Metric label="Road Width" value={`${state.roadWidth}m`} />
-            <Metric label="High-Rise" value={state.evaluation.highRiseEligible ? '✅ Eligible' : '❌ Blocked'} />
-            <Metric label="EIA" value={state.evaluation.eiaRequired ? '⚠️ Required' : '✅ Not needed'} />
+            <Metric label="Zoning District" value="Zone Yor.9 (Brown)" />
+            <Metric label="Plot Area" value={`${state.evaluation.plotAreaSqm.toLocaleString()} m²`} />
+            <Metric label="Frontage" value={`${state.evaluation.frontageM}m (${state.roadWidth}m Road)`} />
+            <Metric label="Permit Track" value={state.evaluation.highRiseEligible ? 'High-Rise Eligible' : 'Low-Rise ≤23m'} />
           </div>
         </Section>
       )}
@@ -89,7 +108,7 @@ export function DesignSelector() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h3 className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider mb-2">
+      <h3 className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
         {title}
       </h3>
       {children}
@@ -99,9 +118,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-neutral-800/50 rounded px-2 py-1">
-      <div className="text-neutral-500">{label}</div>
-      <div className="text-neutral-200 font-medium">{value}</div>
+    <div className="bg-slate-800/50 border border-slate-700/40 rounded-xl px-2.5 py-1.5">
+      <div className="text-slate-400 text-[9px]">{label}</div>
+      <div className="text-slate-200 font-medium truncate">{value}</div>
     </div>
   );
 }

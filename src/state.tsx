@@ -1,10 +1,14 @@
 // ─── App State & Context ───
 import React, { createContext, useContext, useReducer, type Dispatch } from 'react';
 import type {
-  LngLatPolygon, BuildingType, DesignVariant, PresetPlot, LngLat,
+  LngLatPolygon, BuildingType, DesignVariant, PresetPlot, LngLat, PlotEdge, ZoningInput,
 } from './engine/types';
 import type { DesignResult, EvaluationResult } from './engine/types';
 import { PRESET_PLOTS } from './engine/presets';
+import { anchorAtCentroid, polygonToMetric } from './engine/geo';
+import { ensureCCW } from './engine/polygon';
+import { evaluate } from './engine/rules';
+import { generateDesigns } from './engine/designs';
 
 export type Stage = 'site' | 'building' | 'floor' | 'compliance' | 'report';
 
@@ -40,6 +44,37 @@ export interface AppState {
 
 const defaultPreset = PRESET_PLOTS[0]!;
 
+function computeInitialPresetResults() {
+  try {
+    const anchor = anchorAtCentroid(defaultPreset.polygon);
+    const metricPoly = polygonToMetric(anchor, defaultPreset.polygon);
+    const ccwPoly = ensureCCW(metricPoly);
+    const edges: PlotEdge[] = ccwPoly.map((_, i) => {
+      const isRoad = defaultPreset.roadEdges.includes(i);
+      return {
+        index: i,
+        start: ccwPoly[i]!,
+        end: ccwPoly[(i + 1) % ccwPoly.length]!,
+        type: isRoad ? 'road' : 'side',
+        roadWidth: isRoad ? defaultPreset.roadWidth : undefined,
+      };
+    });
+    const input: ZoningInput = {
+      polygon: ccwPoly,
+      edges,
+      buildingType: defaultPreset.buildingType,
+      roadWidths: new Map(defaultPreset.roadEdges.map((i) => [i, defaultPreset.roadWidth])),
+    };
+    const evaluation = evaluate(input);
+    const [designA, designB] = generateDesigns(input);
+    return { designA, designB, evaluation };
+  } catch {
+    return { designA: null, designB: null, evaluation: null };
+  }
+}
+
+const initialResults = computeInitialPresetResults();
+
 export const initialState: AppState = {
   stage: 'site',
   polygon: defaultPreset.polygon,
@@ -56,9 +91,9 @@ export const initialState: AppState = {
   showOSR: true,
   sectionCutaway: false,
   hoveredRule: null,
-  designA: null,
-  designB: null,
-  evaluation: null,
+  designA: initialResults.designA,
+  designB: initialResults.designB,
+  evaluation: initialResults.evaluation,
 };
 
 export type AppAction =

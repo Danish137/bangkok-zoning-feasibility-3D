@@ -12,11 +12,12 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.3.5",
     "maplibre-gl": "^5.4.0",
-    "three": "^0.172.0",
     "polygon-clipping": "^0.15.7",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "three": "^0.172.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",
