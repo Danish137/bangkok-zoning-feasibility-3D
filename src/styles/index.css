@@ -55,3 +55,54 @@
 .maplibregl-ctrl-icon {
   filter: invert(0.85) !important;
 }
+
+.maplibregl-ctrl-scale {
+  background: rgba(15, 23, 42, 0.8) !important;
+  color: #cbd5e1 !important;
+  border-color: #64748b !important;
+  font-size: 10px !important;
+}
+
+/* Edge labels on the map (site stage) */
+.edge-label {
+  font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(15, 23, 42, 0.9);
+  color: #e2e8f0;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.edge-label:hover { border-color: #fb7185; color: #fff; }
+.edge-label--road { border-color: #f59e0b; color: #fde68a; background: rgba(69, 39, 3, 0.92); }
+
+/* Cursor tooltip while drawing / dragging */
+.map-tooltip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 60;
+  pointer-events: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(8, 47, 73, 0.95);
+  border: 1px solid rgba(56, 189, 248, 0.6);
+  color: #e0f2fe;
+  font: 500 11px/1.3 system-ui, sans-serif;
+  white-space: nowrap;
+}
+
+/* Drawing / drag overlay (SVG projected on every camera move; immediate feedback) */
+.draw-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; overflow: visible; }
+.draw-overlay .ov-fill { fill: rgba(56, 189, 248, 0.18); stroke: none; }
+.draw-overlay .ov-line { fill: none; stroke: #38bdf8; stroke-width: 3; stroke-linejoin: round; }
+.draw-overlay .ov-preview { stroke: #7dd3fc; stroke-width: 2.5; stroke-dasharray: 7 5; }
+.draw-overlay .ov-close { stroke: #7dd3fc; stroke-width: 1.5; stroke-dasharray: 3 5; opacity: 0.7; }
+.draw-overlay .ov-v { fill: #fff; stroke: #0ea5e9; stroke-width: 2.5; }
+.draw-overlay .ov-first { fill: #0ea5e9; stroke: #fff; stroke-width: 2.5; }
+.draw-overlay .ov-closable { stroke: #facc15; stroke-width: 4; }
+.draw-overlay .ov-drag { fill: rgba(99, 102, 241, 0.15); stroke: #a5b4fc; stroke-width: 2; stroke-dasharray: 6 4; }
+.draw-overlay .ov-drag.ov-invalid { fill: rgba(244, 63, 94, 0.18); stroke: #fb7185; }
+.draw-overlay .ov-active { fill: #facc15; stroke: #fff; stroke-width: 2.5; }

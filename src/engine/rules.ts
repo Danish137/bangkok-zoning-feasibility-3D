@@ -1,541 +1,380 @@
-// ─── Bangkok Yor.9 Zoning Rules Engine ───
-// Pure deterministic TypeScript — zero DOM/framework deps
-// Implements: Bangkok Plan B.E. 2556, MR 33, MR 55
+// ─── Rules engine: setbacks, sky-exposure planes, road eligibility, envelope & floor stacking ───
+// Pure deterministic TypeScript. Clause references: see ./regulations.ts.
 
 import type {
-  Polygon, MetricPoint, PlotEdge, BuildingType, BuildingTypeConfig,
-  EdgeSetback, SkyPlaneClip, FloorResult, ComplianceCheck, EvaluationResult,
-  ZoningInput, LngLatPolygon,
+  BuildingClass, BuildingType, EdgeSetback, Envelope, FloorResult, MetricPoint, PlotEdge,
+  Polygon, RoadEligibility, SkyPlane, UseCategory,
 } from './types';
-import { BUILDING_TYPES, ZONE_YOR9 } from './types';
-import { sqmToRaiNganWah } from './geo';
+import { BUILDING_TYPES } from './types';
+import { MR33, MR55, YOR9 } from './regulations';
 import {
-  polygonArea, ensureCCW, edgeLength, perEdgeInwardOffset, clipByHalfPlane,
-  edgeInwardNormal, polygonCentroid, isPlotInZoneYor9,
+  clipByHalfPlane, edgeInwardNormal, insetPolygon, intersectPolygons, minimumWidth, polygonArea, projectedExtent,
+  setbackPolygon, signedDistanceToEdgeLine,
 } from './polygon';
 
-// ─── Setback Computation ───
+/** Practical minimum floor plate for a usable storey (design assumption, not law) */
+export const MIN_FLOOR_AREA_SQM = 50;
+export const MIN_FLOOR_WIDTH_M = 5;
+export const MAX_FLOORS = 150;
+/** Strict "< 23 m" / "< 10,000 m²" boundaries are implemented with this tolerance */
+export const STRICT_EPS = 1e-6;
+/** Low-rise buildings must stay below 10,000 m² (MR 33 Cl. 1); 1 m² margin keeps the figure unambiguous */
+export const LOW_RISE_MAX_GFA = 9999;
 
-export interface SetbackConfig {
-  isHighRise: boolean;      // height > 23m
-  isExtraLarge: boolean;    // GFA >= 10,000 sqm
-  floorElevation: number;   // bottom of floor in meters
-}
+export const CLASS_LABELS: Record<BuildingClass, string> = {
+  'low-le9': 'Low-rise ≤ 9 m (MR 55)',
+  'low-lt23': 'Low-rise < 23 m and < 10,000 m² (MR 55)',
+  mr33: 'High-rise / extra-large (MR 33 + MR 55)',
+};
 
-/** Compute setback distance for a single edge at a given floor elevation */
-export function computeEdgeSetback(
-  edge: PlotEdge,
-  config: SetbackConfig
-): EdgeSetback {
-  const { isHighRise, isExtraLarge, floorElevation } = config;
+// ── Setbacks ──
 
-  // High-rise or extra-large: 6m all edges (MR 33)
-  if (isHighRise || isExtraLarge) {
-    return {
-      edgeIndex: edge.index,
-      edgeType: edge.type,
-      setbackMeters: 6,
-      rule: 'MR 33: High-rise/Extra-large 6m setback all edges',
-    };
-  }
-
-  // Standard building (≤23m, <10,000 sqm)
-  if (edge.type === 'road') {
-    const rw = edge.roadWidth ?? 10;
-    let setback: number;
-    let rule: string;
-
-    if (rw >= 20) {
-      setback = 2;
-      rule = `MR 55: Road >20m, setback 2m`;
-    } else if (rw >= 10) {
-      setback = Math.max(rw / 10, 2);
-      rule = `MR 55: Road ${rw}m, setback max(${rw}/10, 2) = ${setback.toFixed(1)}m`;
-    } else {
-      // Road < 10m: 2:1 distance rule from opposite road line, min 2m
-      // Distance from building to opposite side of road = setback + roadWidth
-      // Must be >= H/2 (handled by sky plane), but minimum setback = 2m
-      setback = Math.max(2, rw / 10);
-      rule = `MR 55: Narrow road ${rw}m, min 2m setback + 2:1 sky plane`;
-    }
-
-    return { edgeIndex: edge.index, edgeType: 'road', setbackMeters: setback, rule };
-  }
-
-  // Side/rear edges (MR 55, walls with openings)
-  if (floorElevation < 9) {
-    return {
-      edgeIndex: edge.index,
-      edgeType: edge.type,
-      setbackMeters: 2,
-      rule: 'MR 55: Side/rear ≤9m height, 2m setback',
-    };
-  } else {
-    return {
-      edgeIndex: edge.index,
-      edgeType: edge.type,
-      setbackMeters: 3,
-      rule: 'MR 55: Side/rear 9-23m height, 3m setback',
-    };
-  }
-}
-
-// ─── Sky Exposure Plane (2:1) ───
-
-/** 
- * Apply 2:1 sky exposure plane clipping for a floor at given elevation.
- * Under MR 55 Section 44:
- * The building must not exceed a 2:1 slope drawn from the opposite road boundary.
- * Horizontal distance from opposite road line to building face >= H / 2.
- * Since opposite road line is at distance `roadWidth` from plot boundary:
- * Required horizontal setback from plot road edge = (H / 2) - roadWidth.
- * If this required setback is greater than 0, upper floors must step back.
- * Returns the clipped floor polygon.
+/**
+ * MR 55 Clause 41 setback from the public-road boundary for a building > 2 storeys / > 8 m or a
+ * commercial building (all building types in this tool qualify). The plot edge is assumed to be
+ * the road boundary, so a distance "from the road centreline" becomes (distance − width/2).
  */
-export function applySkyPlane(
-  floorPolygon: Polygon,
-  plotPolygon: Polygon,
-  edges: PlotEdge[],
-  elevationM: number
-): { polygon: Polygon; clips: SkyPlaneClip[] } {
-  let currentPoly = floorPolygon;
-  const clips: SkyPlaneClip[] = [];
+export function clause41RoadSetback(roadWidthM: number): { distanceM: number; basis: string } {
+  const w = roadWidthM;
+  if (w < MR55.roadTier1MaxM) {
+    const d = Math.max(0, MR55.roadTier1CentrelineM - w / 2);
+    return { distanceM: d, basis: `Cl. 41(1): road ${fmt(w)} m < 10 m → ≥ 6 m from centreline = 6 − ${fmt(w / 2)} = ${fmt(d)} m from road line` };
+  }
+  if (w <= MR55.roadTier2MaxM) {
+    const d = w * MR55.roadTier2Fraction;
+    return { distanceM: d, basis: `Cl. 41(2): road 10–20 m → ≥ 1/10 × ${fmt(w)} = ${fmt(d)} m from road line` };
+  }
+  return { distanceM: MR55.roadTier3SetbackM, basis: `Cl. 41(3): road > 20 m → ≥ 2 m from road line` };
+}
 
-  for (const edge of edges) {
-    if (edge.type !== 'road') continue;
-    const rw = edge.roadWidth ?? 10;
-    
-    // MR 55 Section 44:
-    // Required horizontal setback from plot road edge = (H / 2) - roadWidth
-    const clipFromRoadEdge = (elevationM / 2) - rw;
-    
-    // If the required setback from road edge is <= 0, the road setback already complies
-    if (clipFromRoadEdge <= 0) continue;
+/** MR 55 Clause 50 distance from any property line for walls with openings */
+export function clause50OpeningSetback(cls: BuildingClass): { distanceM: number; basis: string } | null {
+  if (cls === 'low-le9') return { distanceM: MR55.openingSetbackLowM, basis: 'MR 55 Cl. 50(1): height ≤ 9 m → walls with openings ≥ 2 m from property line' };
+  if (cls === 'low-lt23') return { distanceM: MR55.openingSetbackMidM, basis: 'MR 55 Cl. 50(2): 9 m < height < 23 m → walls with openings ≥ 3 m from property line' };
+  return null;
+}
 
-    const p1 = plotPolygon[edge.index]!;
-    const p2 = plotPolygon[(edge.index + 1) % plotPolygon.length]!;
-    const [nx, ny] = edgeInwardNormal(p1, p2);
+export function computeSetbacks(edges: PlotEdge[], cls: BuildingClass): EdgeSetback[] {
+  const c50 = clause50OpeningSetback(cls);
+  return edges.map((e) => {
+    const candidates: { d: number; basis: string; ref: string }[] = [];
+    if (cls === 'mr33') {
+      candidates.push({ d: MR33.boundarySetbackM, basis: 'MR 33 Cl. 4: outermost part ≥ 6 m from neighbouring land or public road', ref: 'MR 33 Cl. 4' });
+    } else if (c50) {
+      candidates.push({ d: c50.distanceM, basis: c50.basis, ref: cls === 'low-le9' ? 'MR 55 Cl. 50(1)' : 'MR 55 Cl. 50(2)' });
+    }
+    if (e.kind === 'road' && e.roadWidthM !== undefined) {
+      const r = clause41RoadSetback(e.roadWidthM);
+      candidates.push({ d: r.distanceM, basis: `MR 55 ${r.basis}`, ref: 'MR 55 Cl. 41' });
+    }
+    const gov = candidates.reduce((a, b) => (b.d > a.d ? b : a), candidates[0]!);
+    const others = candidates.filter((c) => c !== gov).map((c) => `${c.ref} ${fmt(c.d)} m`);
+    return {
+      edgeIndex: e.index,
+      kind: e.kind,
+      distanceM: gov.d,
+      basis: gov.basis + (others.length ? ` (governs over ${others.join(', ')})` : ''),
+      reference: gov.ref,
+    };
+  });
+}
 
-    // Offset the plot's road edge inward by clipFromRoadEdge
-    const offsetP1: MetricPoint = [p1[0] + nx * clipFromRoadEdge, p1[1] + ny * clipFromRoadEdge];
-    const offsetP2: MetricPoint = [p2[0] + nx * clipFromRoadEdge, p2[1] + ny * clipFromRoadEdge];
+// ── Sky-exposure planes (MR 55 Clauses 44–46) ──
 
-    const clipped = clipByHalfPlane(currentPoly, offsetP1, offsetP2, [nx, ny]);
-    if (clipped.length > 0 && clipped[0]!.length >= 3) {
-      currentPoly = clipped[0]!;
-      clips.push({
-        floorIndex: -1, // filled in by caller
-        elevationM,
-        clipDistanceFromRoad: clipFromRoadEdge,
-        roadEdgeIndex: edge.index,
-      });
-    } else {
-      // Floor is completely clipped away by sky exposure plane
-      return { polygon: [], clips };
+/**
+ * Clause 44: H(p) ≤ 2 × horizontal distance from p to the opposite boundary of the nearest
+ * public road. With several roads every plane applies (equivalent to "nearest road").
+ * Clause 45 (two unequal parallel roads ≤ 60 m apart, building width along the wider road ≤ 60 m)
+ * and Clause 46 (corner of two unequal roads, building length along the narrower road ≤ 60 m)
+ * let the wider road govern; the narrower road's plane is then inactive.
+ * Building extents are tested on the buildable polygon (a superset of any floor), so relief is
+ * only granted when it holds for every possible design.
+ */
+export function computeSkyPlanes(edges: PlotEdge[], buildable: Polygon): SkyPlane[] {
+  const roads = edges.filter((e) => e.kind === 'road' && e.roadWidthM !== undefined);
+  if (roads.length === 0) return [];
+  const widest = roads.reduce((a, b) => ((b.roadWidthM ?? 0) > (a.roadWidthM ?? 0) ? b : a));
+  const wW = widest.roadWidthM!;
+  return roads.map((r) => {
+    const w = r.roadWidthM!;
+    if (r === widest || w >= wW - 1e-9) {
+      return { edgeIndex: r.index, roadWidthM: w, active: true, reason: roads.length > 1 && r !== widest ? 'Equal-width road: Cl. 44 nearest-road rule applies' : 'Cl. 44: 2:1 plane from the opposite road boundary' };
+    }
+    const dirW = unit(widest.start, widest.end);
+    const dirR = unit(r.start, r.end);
+    const cos = Math.abs(dirW[0] * dirR[0] + dirW[1] * dirR[1]);
+    if (cos > 0.9) {
+      // Clause 45: parallel roads on opposite sides
+      const mid: MetricPoint = [(r.start[0] + r.end[0]) / 2, (r.start[1] + r.end[1]) / 2];
+      const gap = Math.abs(signedDistanceToEdgeLine(mid, widest.start, widest.end));
+      const widthAlongWide = projectedExtent(buildable, dirW);
+      if (gap <= MR55.multiRoadReliefM && widthAlongWide <= MR55.multiRoadReliefM) {
+        return { edgeIndex: r.index, roadWidthM: w, active: false, reason: `Cl. 45 relief: roads ${fmt(gap)} m apart (≤ 60 m), building width along ${fmt(wW)} m road ≤ ${fmt(widthAlongWide)} m (≤ 60 m) → wider road governs` };
+      }
+      return { edgeIndex: r.index, roadWidthM: w, active: true, reason: `Cl. 45 relief not available (gap ${fmt(gap)} m or width ${fmt(widthAlongWide)} m > 60 m) → Cl. 44 applies` };
+    }
+    // Clause 46: corner of two unequal roads
+    const lenAlongNarrow = projectedExtent(buildable, dirR);
+    if (lenAlongNarrow <= MR55.multiRoadReliefM) {
+      return { edgeIndex: r.index, roadWidthM: w, active: false, reason: `Cl. 46 corner relief: building length along the ${fmt(w)} m road ≤ ${fmt(lenAlongNarrow)} m (≤ 60 m) → ${fmt(wW)} m road governs` };
+    }
+    return { edgeIndex: r.index, roadWidthM: w, active: true, reason: `Cl. 46 relief not available (length along narrower road ${fmt(lenAlongNarrow)} m > 60 m) → Cl. 44 applies` };
+  });
+}
+
+/** Offset (m, inward from the plot road line) required by a plane for a point at height topM */
+export function skyPlaneOffset(topM: number, roadWidthM: number): number {
+  return topM / MR55.skyPlaneRatio - roadWidthM;
+}
+
+/** Layer 3: allowable polygon at a given roof/top height */
+export function allowableAt(
+  buildable: Polygon, edges: PlotEdge[], planes: SkyPlane[], topM: number,
+): { polygon: Polygon; areaSqm: number; clippedBy: number[] } {
+  let poly = buildable;
+  const clippedBy: number[] = [];
+  for (const pl of planes) {
+    if (!pl.active) continue;
+    const t = skyPlaneOffset(topM, pl.roadWidthM);
+    if (t <= 0) continue;
+    const e = edges[pl.edgeIndex]!;
+    const [nx, ny] = edgeInwardNormal(e.start, e.end);
+    const p1: MetricPoint = [e.start[0] + nx * t, e.start[1] + ny * t];
+    const p2: MetricPoint = [e.end[0] + nx * t, e.end[1] + ny * t];
+    const before = polygonArea(poly);
+    const r = clipByHalfPlane(poly, p1, p2, [nx, ny]);
+    poly = r.polygon;
+    if (poly.length < 3) return { polygon: [], areaSqm: 0, clippedBy: [...clippedBy, pl.edgeIndex] };
+    if (r.areaSqm < before - 1e-6) clippedBy.push(pl.edgeIndex);
+  }
+  return { polygon: poly, areaSqm: polygonArea(poly), clippedBy };
+}
+
+// ── Road eligibility for MR 33 buildings (Clause 2) ──
+
+export function checkRoadEligibility(edges: PlotEdge[]): RoadEligibility {
+  const roads = edges.filter((e) => e.kind === 'road');
+  const q10 = roads.filter((e) => e.lengthM >= MR33.minFrontageM - 1e-9 && (e.roadWidthM ?? 0) >= MR33.minRoadWidthM - 1e-9);
+  const q18 = q10.filter((e) => (e.roadWidthM ?? 0) >= MR33.minRoadWidthLargeM - 1e-9);
+  if (roads.length === 0) {
+    return { mr33Allowed: false, mr33MaxGFA: 0, qualifyingEdges: [], reason: 'No public-road frontage declared; MR 33 Cl. 2 requires a ≥ 12 m side on a ≥ 10 m public road' };
+  }
+  if (q10.length === 0) {
+    const best = roads.reduce((a, b) => ((b.roadWidthM ?? 0) > (a.roadWidthM ?? 0) ? b : a));
+    const why = (best.roadWidthM ?? 0) < MR33.minRoadWidthM
+      ? `widest road is ${fmt(best.roadWidthM ?? 0)} m (< 10 m)`
+      : `no ≥ 10 m road edge is ≥ 12 m long`;
+    return { mr33Allowed: false, mr33MaxGFA: 0, qualifyingEdges: [], reason: `High-rise / extra-large not permitted: MR 33 Cl. 2 needs a plot side ≥ 12 m on a public road ≥ 10 m wide — ${why}` };
+  }
+  if (q18.length > 0) {
+    return { mr33Allowed: true, mr33MaxGFA: Infinity, qualifyingEdges: q18.map((e) => e.index), reason: 'MR 33 Cl. 2: ≥ 12 m frontage on a ≥ 18 m road → no road-based floor-area cap' };
+  }
+  return { mr33Allowed: true, mr33MaxGFA: MR33.largeAreaSqm, qualifyingEdges: q10.map((e) => e.index), reason: 'MR 33 Cl. 2: ≥ 12 m frontage on a 10–18 m road → total floor area ≤ 30,000 m²' };
+}
+
+// ── Envelope per building class ──
+
+export interface UseCaps {
+  /** Max total floor area allowed by the use rules (Plan Cl. 16) */
+  maxGFA: number;
+  maxGFARule: string;
+  /** Max commercial area (mixed-use podium), Plan Cl. 16 (9) */
+  maxCommercial: number;
+  maxCommercialRule: string;
+}
+
+export function useCaps(buildingType: BuildingType, maxRoadWidthM: number, nearTransit: boolean): UseCaps {
+  const cfg = BUILDING_TYPES[buildingType];
+  const caps: UseCaps = { maxGFA: Infinity, maxGFARule: '', maxCommercial: Infinity, maxCommercialRule: '' };
+  if (cfg.use === 'office' && maxRoadWidthM < YOR9.office.roadM && !nearTransit) {
+    caps.maxGFA = YOR9.office.maxAreaSqm;
+    caps.maxGFARule = `Plan Cl. 16(10): office > 10,000 m² needs a road ≥ 16 m or a site within 500 m of a station (road ${fmt(maxRoadWidthM)} m)`;
+  }
+  if (cfg.use === 'mixed' && !nearTransit) {
+    if (maxRoadWidthM < YOR9.commerce.tier1RoadM) {
+      caps.maxCommercial = YOR9.commerce.tier1AreaSqm;
+      caps.maxCommercialRule = `Plan Cl. 16(9): commerce > 5,000 m² needs a road ≥ 12 m or 500 m of a station`;
+    } else if (maxRoadWidthM < YOR9.commerce.tier2RoadM) {
+      caps.maxCommercial = YOR9.commerce.tier2AreaSqm;
+      caps.maxCommercialRule = `Plan Cl. 16(9)(b): commerce > 10,000 m² needs a road ≥ 16 m or 500 m of a station`;
     }
   }
-
-  return { polygon: currentPoly, clips };
+  return caps;
 }
 
-// ─── Road Eligibility ───
-
-export interface RoadEligibility {
-  highRiseAllowed: boolean;
-  maxHeight: number;
-  maxGFA: number;
-  blocker?: string;
+export interface EnvelopeContext {
+  plot: Polygon;
+  plotAreaSqm: number;
+  edges: PlotEdge[];
+  buildingType: BuildingType;
+  roadEligibility: RoadEligibility;
+  caps: UseCaps;
 }
 
-export function checkRoadEligibility(edges: PlotEdge[], plotArea: number): RoadEligibility {
-  // Find widest road and longest frontage
-  let maxRoadWidth = 0;
-  let maxFrontageLength = 0;
-
-  for (const edge of edges) {
-    if (edge.type !== 'road') continue;
-    const rw = edge.roadWidth ?? 0;
-    const len = edgeLength(edge.start, edge.end);
-    if (rw > maxRoadWidth) maxRoadWidth = rw;
-    if (len > maxFrontageLength) maxFrontageLength = len;
+export function buildEnvelope(ctx: EnvelopeContext, cls: BuildingClass): Envelope {
+  const setbacks = computeSetbacks(ctx.edges, cls);
+  const piece = setbackPolygon(ctx.plot, setbacks.map((s) => s.distanceM));
+  const buildable = piece.polygon;
+  const planes = buildable.length >= 3 ? computeSkyPlanes(ctx.edges, buildable) : [];
+  const farGFA = ctx.plotAreaSqm * YOR9.maxFAR;
+  let maxGFA = farGFA;
+  let gfaRule = `Plan Cl. 16: FAR 7:1 × ${fmt(ctx.plotAreaSqm)} m²`;
+  const tighten = (v: number, rule: string) => { if (v < maxGFA) { maxGFA = v; gfaRule = rule; } };
+  let maxHeightM: number | null = null;
+  let heightRule = '';
+  if (cls === 'low-le9') {
+    maxHeightM = MR55.openingSetbackLowMaxHeightM;
+    heightRule = 'Height ≤ 9 m (MR 55 Cl. 50(1) tier with 2 m openings setback)';
+    tighten(LOW_RISE_MAX_GFA, 'Total floor area < 10,000 m² (otherwise MR 33 extra-large)');
+  } else if (cls === 'low-lt23') {
+    maxHeightM = MR33.highRiseHeightM - STRICT_EPS;
+    heightRule = 'Height < 23 m (MR 33 Cl. 1: ≥ 23 m is a high-rise building)';
+    tighten(LOW_RISE_MAX_GFA, 'Total floor area < 10,000 m² (MR 33 Cl. 1: ≥ 10,000 m² is extra-large)');
+  } else {
+    heightRule = 'No absolute height limit in ย.9; height is bounded by FAR and the 2:1 plane';
+    if (Number.isFinite(ctx.roadEligibility.mr33MaxGFA)) tighten(ctx.roadEligibility.mr33MaxGFA, 'MR 33 Cl. 2: ≤ 30,000 m² unless ≥ 12 m frontage on a ≥ 18 m road');
   }
-
-  if (maxRoadWidth === 0) {
-    return {
-      highRiseAllowed: false,
-      maxHeight: 23,
-      maxGFA: Math.min(10000, plotArea * ZONE_YOR9.maxFAR),
-      blocker: 'No road-facing edge defined',
-    };
-  }
-
-  if (maxRoadWidth < 10) {
-    return {
-      highRiseAllowed: false,
-      maxHeight: 23,
-      maxGFA: Math.min(9999, plotArea * ZONE_YOR9.maxFAR),
-      blocker: `Road width ${maxRoadWidth}m < 10m required for high-rise (MR 33)`,
-    };
-  }
-
-  if (maxFrontageLength < 12) {
-    return {
-      highRiseAllowed: false,
-      maxHeight: 23,
-      maxGFA: Math.min(9999, plotArea * ZONE_YOR9.maxFAR),
-      blocker: `Frontage ${maxFrontageLength.toFixed(1)}m < 12m required for high-rise (MR 33)`,
-    };
-  }
-
-  // High-rise allowed
-  const maxGFA = maxRoadWidth >= 18
-    ? plotArea * ZONE_YOR9.maxFAR   // no GFA cap beyond FAR
-    : Math.min(29999, plotArea * ZONE_YOR9.maxFAR); // < 18m road: GFA < 30,000
-
+  if (ctx.caps.maxGFA < maxGFA) tighten(ctx.caps.maxGFA, ctx.caps.maxGFARule);
   return {
-    highRiseAllowed: true,
-    maxHeight: Infinity,
+    buildingClass: cls,
+    classLabel: CLASS_LABELS[cls],
+    setbacks,
+    buildablePolygon: buildable,
+    buildableAreaSqm: piece.areaSqm,
+    discardedAreaSqm: piece.discardedAreaSqm,
+    skyPlanes: planes,
+    maxHeightM,
+    heightRule,
     maxGFA,
+    gfaRule,
   };
 }
 
-// ─── Floor Generation ───
+// ── Floor stacking ──
 
-export interface GenerateFloorsOptions {
-  targetGFA?: number; // optional GFA cap
-  maxHeight?: number; // optional height override
-  podiumFloors?: number; // number of podium floors before tower inset
-  towerInsetMeters?: number; // additional inset on tower floors
-  groundInsetMeters?: number; // additional inset on all floors (e.g. courtyard)
+export type StopReason =
+  | 'gfa-cap'
+  | 'height-limit'
+  | 'sky-plane'
+  | 'max-floors'
+  | 'no-buildable-area';
+
+export interface StackResult {
+  floors: FloorResult[];
+  stopReason: StopReason;
+  totalGFA: number;
 }
 
-export function generateFloors(
-  plotPolygon: Polygon,
-  edges: PlotEdge[],
-  buildingType: BuildingType,
-  roadEligibility: RoadEligibility,
-  options?: GenerateFloorsOptions | number, // supports number for backward compat
-): FloorResult[] {
-  const opts: GenerateFloorsOptions = typeof options === 'number' ? { targetGFA: options } : (options ?? {});
-  const config = BUILDING_TYPES[buildingType];
-  const plotArea = polygonArea(plotPolygon);
-  const maxFAR_GFA = plotArea * ZONE_YOR9.maxFAR;
-  const maxGFA = opts.targetGFA ?? Math.min(roadEligibility.maxGFA, maxFAR_GFA);
-  const effectiveMaxHeight = opts.maxHeight ?? (config.maxHeightCap
-    ? Math.min(config.maxHeightCap, roadEligibility.maxHeight)
-    : roadEligibility.maxHeight);
+export function floorHeightAt(buildingType: BuildingType, index: number): number {
+  const cfg = BUILDING_TYPES[buildingType];
+  return index === 0 && cfg.groundFloorHeight ? cfg.groundFloorHeight : cfg.floorToFloor;
+}
 
+/** Shrink a polygon by uniform inset until its area is ≤ target (largest area ≤ target). */
+export function shrinkToArea(poly: Polygon, targetSqm: number): Polygon {
+  if (polygonArea(poly) <= targetSqm) return poly;
+  let lo = 0;
+  let hi = minimumWidth(poly) / 2;
+  let best: Polygon = [];
+  for (let k = 0; k < 40; k++) {
+    const mid = (lo + hi) / 2;
+    const r = insetPolygon(poly, mid);
+    if (r.areaSqm <= targetSqm) { best = r.polygon; hi = mid; } else { lo = mid; }
+    if (hi - lo < 1e-4) break;
+  }
+  if (best.length < 3) best = insetPolygon(poly, hi).polygon;
+  return best;
+}
+
+/**
+ * Stack storeys inside `footprint` (⊆ buildable) under the envelope's height and floor-area caps.
+ * Each floor = allowable(top) ∩ footprint. The last floor is trimmed to land exactly on the cap.
+ */
+export function stackFloors(
+  ctx: EnvelopeContext,
+  env: Envelope,
+  footprint: Polygon,
+  allowableCache?: Map<number, { polygon: Polygon; areaSqm: number; clippedBy: number[] }>,
+): StackResult {
+  const cfg = BUILDING_TYPES[ctx.buildingType];
   const floors: FloorResult[] = [];
-  let cumulativeGFA = 0;
-  let floorIndex = 0;
-
-  while (true) {
-    const floorHeight = floorIndex === 0 && config.groundFloorHeight
-      ? config.groundFloorHeight
-      : config.floorToFloor;
-    const elevation = floors.reduce((sum, f) => sum + f.heightM, 0);
-    const topOfFloor = elevation + floorHeight;
-
-    // Height limit check
-    if (topOfFloor > effectiveMaxHeight) break;
-
-    // Determine if this floor level makes the building high-rise
-    const willBeHighRise = topOfFloor > 23;
-    if (willBeHighRise && !roadEligibility.highRiseAllowed) break;
-
-    // Compute setbacks for this floor
-    const isHighRise = willBeHighRise;
-    const isExtraLarge = cumulativeGFA >= 10000;
-
-    // Check if this floor is a tower floor in a podium-tower design
-    const isTowerFloor = opts.podiumFloors !== undefined && floorIndex >= opts.podiumFloors;
-    const extraInset = (opts.groundInsetMeters ?? 0) + (isTowerFloor ? (opts.towerInsetMeters ?? 0) : 0);
-
-    const setbackDistances = edges.map((edge) => {
-      const sb = computeEdgeSetback(edge, {
-        isHighRise: isHighRise || isExtraLarge,
-        isExtraLarge,
-        floorElevation: elevation,
-      });
-      return sb.setbackMeters + extraInset;
-    });
-
-    const setbacks = edges.map((edge) =>
-      computeEdgeSetback(edge, {
-        isHighRise: isHighRise || isExtraLarge,
-        isExtraLarge,
-        floorElevation: elevation,
-      })
-    );
-
-    // Apply per-edge setbacks
-    const offsetPolygons = perEdgeInwardOffset(plotPolygon, setbackDistances);
-    if (offsetPolygons.length === 0) break;
-
-    let floorPoly = offsetPolygons[0]!;
-
-    // Apply 2:1 sky exposure plane
-    const { polygon: clippedPoly, clips } = applySkyPlane(
-      floorPoly, plotPolygon, edges, topOfFloor
-    );
-
-    if (clippedPoly.length < 3) break;
-    floorPoly = clippedPoly;
-
-    const floorArea = polygonArea(floorPoly);
-    if (floorArea < 1) break; // too small to be useful
-
-    // GFA cap check
-    if (cumulativeGFA + floorArea > maxGFA) break;
-
+  if (footprint.length < 3 || env.buildablePolygon.length < 3) return { floors, stopReason: 'no-buildable-area', totalGFA: 0 };
+  const sameAsBuildable = footprint === env.buildablePolygon;
+  let cum = 0;
+  let commercial = 0;
+  let elevation = 0;
+  let stop: StopReason = 'max-floors';
+  for (let i = 0; i < MAX_FLOORS; i++) {
+    const h = floorHeightAt(ctx.buildingType, i);
+    const top = elevation + h;
+    if (env.maxHeightM !== null && top > env.maxHeightM + 1e-9) { stop = 'height-limit'; break; }
+    let allow = allowableCache?.get(i);
+    if (!allow) {
+      allow = allowableAt(env.buildablePolygon, ctx.edges, env.skyPlanes, top);
+      allowableCache?.set(i, allow);
+    }
+    if (allow.polygon.length < 3 || allow.areaSqm < MIN_FLOOR_AREA_SQM) { stop = 'sky-plane'; break; }
+    let actual: Polygon;
+    if (sameAsBuildable) {
+      actual = allow.polygon;
+    } else {
+      const inter = intersectIfNeeded(allow.polygon, footprint);
+      actual = inter;
+    }
+    let area = polygonArea(actual);
+    if (actual.length < 3 || area < MIN_FLOOR_AREA_SQM || minimumWidth(actual) < MIN_FLOOR_WIDTH_M) {
+      stop = allow.clippedBy.length > 0 ? 'sky-plane' : 'no-buildable-area';
+      break;
+    }
+    let partial = false;
+    if (cum + area > env.maxGFA) {
+      const remaining = env.maxGFA - cum;
+      if (remaining < MIN_FLOOR_AREA_SQM) { stop = 'gfa-cap'; break; }
+      actual = shrinkToArea(actual, remaining);
+      area = polygonArea(actual);
+      if (actual.length < 3 || area < MIN_FLOOR_AREA_SQM) { stop = 'gfa-cap'; break; }
+      partial = true;
+    }
+    let use: UseCategory = cfg.use === 'office' ? 'commercial' : 'residential';
+    if (cfg.use === 'mixed' && i < (cfg.commercialPodiumFloors ?? 0) && commercial + area <= ctx.caps.maxCommercial) {
+      use = 'commercial';
+      commercial += area;
+    }
     floors.push({
-      index: floorIndex,
+      index: i,
       elevationM: elevation,
-      heightM: floorHeight,
-      polygon: floorPoly,
-      areaSqm: floorArea,
-      setbacks,
-      skyPlaneClips: clips.map((c) => ({ ...c, floorIndex })),
+      heightM: h,
+      topM: top,
+      use,
+      allowablePolygon: allow.polygon,
+      allowableAreaSqm: allow.areaSqm,
+      polygon: actual,
+      areaSqm: area,
+      isPartial: partial,
+      skyPlaneEdges: allow.clippedBy,
     });
-
-    cumulativeGFA += floorArea;
-    floorIndex++;
-
-    // Safety: max 100 floors
-    if (floorIndex >= 100) break;
+    cum += area;
+    elevation = top;
+    if (partial) { stop = 'gfa-cap'; break; }
   }
-
-  return floors;
+  return { floors, stopReason: stop, totalGFA: cum };
 }
 
-// ─── Compliance Checks ───
-
-export function computeCompliance(
-  plotArea: number,
-  floors: FloorResult[],
-  edges: PlotEdge[],
-  buildingType: BuildingType,
-  roadEligibility: RoadEligibility,
-  polygonLngLat?: LngLatPolygon,
-): ComplianceCheck[] {
-  const config = BUILDING_TYPES[buildingType];
-  const totalGFA = floors.reduce((sum, f) => sum + f.areaSqm, 0);
-  const actualFAR = plotArea > 0 ? totalGFA / plotArea : 0;
-  const groundFloor = floors[0];
-  const groundCoverage = groundFloor ? groundFloor.areaSqm / plotArea : 0;
-  const openSpaceSqm = plotArea - (groundFloor?.areaSqm ?? 0);
-  const openSpacePercent = (openSpaceSqm / plotArea) * 100;
-  const height = floors.reduce((sum, f) => sum + f.heightM, 0);
-  const isResidential = config.useCategory === 'residential';
-
-  // Zoning OSR: 4.5% of GFA
-  const zoningOSR = 0.045 * totalGFA;
-  // BCA MR 55: 30% of plot (residential) or 10% (commercial)
-  const bcaOpenSpace = isResidential ? 0.30 * plotArea : 0.10 * plotArea;
-
-  // Find max road width and frontage
-  let maxRoadWidth = 0;
-  let maxFrontage = 0;
-  for (const edge of edges) {
-    if (edge.type !== 'road') continue;
-    maxRoadWidth = Math.max(maxRoadWidth, edge.roadWidth ?? 0);
-    maxFrontage = Math.max(maxFrontage, edgeLength(edge.start, edge.end));
-  }
-
-  const estimatedUnits = Math.floor((totalGFA * 0.7) / 40);
-  const eiaByHeight = height > 23 && isResidential;
-  const eiaByUnits = estimatedUnits >= 80;
-
-  // Road setback check
-  const isHighRise = height > 23 || totalGFA >= 10000;
-  const minRequiredRoadSetback = isHighRise ? 6 : (maxRoadWidth >= 20 ? 2 : Math.max(2, maxRoadWidth / 10));
-
-  const zoneCheck = isPlotInZoneYor9(polygonLngLat);
-
-  const checks: ComplianceCheck[] = [];
-
-  // 0. Zoning Jurisdiction Check (if coordinates provided)
-  if (polygonLngLat && polygonLngLat.length > 0) {
-    checks.push({
-      rule: 'zoning-boundary',
-      label: 'Zone Yor.9 Jurisdiction',
-      actual: zoneCheck.inZone ? 'Verified In Zone' : `${zoneCheck.outsideCount} vertex outside`,
-      allowed: 'Inside Zone Yor.9',
-      unit: '',
-      pass: zoneCheck.inZone,
-      statutoryRef: 'Bangkok Comprehensive Plan B.E. 2556 (Zone Yor.9)',
-    });
-  }
-
-  checks.push(
-    {
-      rule: 'far',
-      label: 'Floor Area Ratio (FAR)',
-      actual: Math.round(actualFAR * 100) / 100,
-      allowed: ZONE_YOR9.maxFAR,
-      unit: '',
-      pass: actualFAR <= ZONE_YOR9.maxFAR + 0.01,
-      statutoryRef: 'Bangkok Plan B.E. 2556, Zone Yor.9',
-    },
-    {
-      rule: 'osr',
-      label: 'Open Space (Zoning OSR)',
-      actual: Math.round(openSpaceSqm * 10) / 10,
-      allowed: Math.round(zoningOSR * 10) / 10,
-      unit: 'sqm',
-      pass: openSpaceSqm >= zoningOSR - 0.1,
-      statutoryRef: 'Bangkok Plan B.E. 2556, Zone Yor.9 (4.5% of GFA)',
-    },
-    {
-      rule: 'bca-open-space',
-      label: `BCA Open Space (${isResidential ? '30%' : '10%'} of plot)`,
-      actual: Math.round(openSpacePercent * 10) / 10,
-      allowed: isResidential ? 30 : 10,
-      unit: '%',
-      pass: openSpacePercent >= (isResidential ? 30 : 10) - 0.1,
-      statutoryRef: 'MR 55 Clause 33 (Open Space Ratio)',
-    },
-    {
-      rule: 'height',
-      label: 'Building Height Limit',
-      actual: Math.round(height * 10) / 10,
-      allowed: roadEligibility.maxHeight === Infinity ? 'No limit' : roadEligibility.maxHeight,
-      unit: 'm',
-      pass: height <= roadEligibility.maxHeight + 0.1,
-      statutoryRef: height > 23 ? 'MR 33 (Road & Frontage)' : 'MR 55 / Building Type Cap',
-    },
-    {
-      rule: 'road-setback',
-      label: 'Road Frontage Setback',
-      actual: isHighRise ? '≥ 6m' : `≥ ${minRequiredRoadSetback}m`,
-      allowed: isHighRise ? '6.0m (MR 33)' : `${minRequiredRoadSetback}m (MR 55)`,
-      unit: '',
-      pass: true,
-      statutoryRef: isHighRise ? 'MR 33: 6m fire access' : 'MR 55 Clause 41 (Road Setbacks)',
-    },
-    {
-      rule: 'side-rear-setback',
-      label: 'Side & Rear Setbacks',
-      actual: isHighRise ? '≥ 6m' : (height > 9 ? '≥ 3m' : '≥ 2m'),
-      allowed: isHighRise ? '6.0m (MR 33)' : (height > 9 ? '3.0m' : '2.0m'),
-      unit: '',
-      pass: true,
-      statutoryRef: isHighRise ? 'MR 33: 6m all edges' : 'MR 55 Clause 50 (Side/Rear Setbacks)',
-    },
-    {
-      rule: 'sky-plane',
-      label: '2:1 Sky Exposure Plane',
-      actual: 'Compliant',
-      allowed: '1:2 Slope',
-      unit: '',
-      pass: true,
-      statutoryRef: 'MR 55 Clause 44 (2:1 Sky Exposure Plane)',
-    },
-    {
-      rule: 'road-width',
-      label: 'Road Width Eligibility',
-      actual: `${maxRoadWidth}m`,
-      allowed: height > 23 ? '≥ 10m' : 'Any',
-      unit: '',
-      pass: height <= 23 || maxRoadWidth >= 10,
-      statutoryRef: 'MR 33: High-rise requires road >= 10m',
-    },
-    {
-      rule: 'frontage',
-      label: 'Road Frontage Eligibility',
-      actual: `${Math.round(maxFrontage * 10) / 10}m`,
-      allowed: height > 23 ? '≥ 12m' : 'Any',
-      unit: '',
-      pass: height <= 23 || maxFrontage >= 12,
-      statutoryRef: 'MR 33: High-rise requires frontage >= 12m',
-    },
-    {
-      rule: 'eia',
-      label: 'EIA Approval Status',
-      actual: eiaByHeight || eiaByUnits ? 'Required' : 'Exempt',
-      allowed: 'Info',
-      unit: '',
-      pass: true, // informational flag
-      statutoryRef: 'NEB EIA Notification (Height > 23m or Units >= 80)',
-    },
-  );
-
-  return checks;
+function intersectIfNeeded(a: Polygon, b: Polygon): Polygon {
+  return intersectPolygons(a, b).polygon;
 }
 
-// ─── Full Evaluation ───
+// ── helpers ──
 
-export function evaluate(input: ZoningInput): EvaluationResult {
-  const polygon = ensureCCW(input.polygon);
-  const plotArea = polygonArea(polygon);
-  const config = BUILDING_TYPES[input.buildingType];
-  
-  const roadElig = checkRoadEligibility(input.edges, plotArea);
-  const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig);
+function unit(a: MetricPoint, b: MetricPoint): MetricPoint {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const l = Math.hypot(dx, dy) || 1;
+  return [dx / l, dy / l];
+}
 
-  const totalGFA = floors.reduce((sum, f) => sum + f.areaSqm, 0);
-  const actualFAR = plotArea > 0 ? totalGFA / plotArea : 0;
-  const groundFloor = floors[0];
-  const groundCoverage = groundFloor ? (groundFloor.areaSqm / plotArea) * 100 : 0;
-  const openSpaceSqm = plotArea - (groundFloor?.areaSqm ?? 0);
-  const openSpacePercent = plotArea > 0 ? (openSpaceSqm / plotArea) * 100 : 0;
-  const height = floors.reduce((sum, f) => sum + f.heightM, 0);
-  const estimatedUnits = Math.floor((totalGFA * 0.7) / 40);
-  const isHighRise = height > 23;
-  const isExtraLarge = totalGFA >= 10000;
-  const isResidential = config.useCategory === 'residential';
-  const eiaRequired = (isResidential && isHighRise) || estimatedUnits >= 80;
-
-  // Frontage
-  let maxRoadWidth = 0;
-  let maxFrontageLength = 0;
-  for (const edge of input.edges) {
-    if (edge.type !== 'road') continue;
-    maxRoadWidth = Math.max(maxRoadWidth, edge.roadWidth ?? 0);
-    maxFrontageLength = Math.max(maxFrontageLength, edgeLength(edge.start, edge.end));
-  }
-
-  const zoneCheck = isPlotInZoneYor9(input.polygonLngLat);
-  const checks = computeCompliance(plotArea, floors, input.edges, input.buildingType, roadElig, input.polygonLngLat);
-  const plotRaiNganWah = sqmToRaiNganWah(plotArea);
-
-  return {
-    plotAreaSqm: Math.round(plotArea * 100) / 100,
-    plotAreaRaiNganWah: plotRaiNganWah.display,
-    frontageM: Math.round(maxFrontageLength * 100) / 100,
-
-    maxAllowedHeightM: roadElig.maxHeight === Infinity ? 999 : roadElig.maxHeight,
-    maxAllowedFloors: Math.floor((roadElig.maxHeight === Infinity ? 999 : roadElig.maxHeight) / config.floorToFloor),
-    maxAllowedGFA: Math.round(roadElig.maxGFA * 100) / 100,
-
-    totalGFA: Math.round(totalGFA * 100) / 100,
-    actualFAR: Math.round(actualFAR * 100) / 100,
-    groundCoveragePercent: Math.round(groundCoverage * 10) / 10,
-    openSpaceSqm: Math.round(openSpaceSqm * 100) / 100,
-    openSpacePercent: Math.round(openSpacePercent * 10) / 10,
-    heightM: Math.round(height * 10) / 10,
-    floorCount: floors.length,
-    estimatedUnits,
-
-    floors,
-    checks,
-
-    isHighRise,
-    isExtraLarge,
-    eiaRequired,
-    eiaReason: eiaRequired
-      ? (isHighRise ? 'Height > 23m (residential)' : `Estimated ${estimatedUnits} units ≥ 80`)
-      : undefined,
-    roadBlocker: roadElig.blocker,
-    btsFlag: config.useCategory === 'commercial',
-    zoneCheck: input.polygonLngLat ? {
-      inZone: zoneCheck.inZone,
-      outsideCount: zoneCheck.outsideCount,
-      message: zoneCheck.message,
-    } : undefined,
-
-    maxRoadWidth,
-    maxFrontageLength,
-    highRiseEligible: roadElig.highRiseAllowed,
-  };
+export function fmt(v: number, digits = 1): string {
+  if (!Number.isFinite(v)) return '∞';
+  const r = Math.round(v * 10 ** digits) / 10 ** digits;
+  return r.toLocaleString('en-US', { maximumFractionDigits: digits });
 }

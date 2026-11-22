@@ -1,147 +1,245 @@
-// ─── Design Generators ───
-// Generates Design A (Max-Yield) and Design B (Podium-Tower or Sub-EIA)
-// Pure TypeScript, no DOM deps
+// ─── Design generators ───
+// Design A — Maximum Yield: the largest legal total floor area over all permissible building
+//            classes (low-rise ≤ 9 m, low-rise < 23 m, MR 33 high-rise/extra-large).
+// Design B — Open Space Optimised: deliberately limits the ground footprint to ~60 % of
+//            Design A's, then takes the best legal yield on that smaller footprint (taller where
+//            the road allows it). It is checked independently against every rule.
+// Both are deterministic: same input → same output.
 
-import type {
-  Polygon, PlotEdge, BuildingType, DesignVariant, DesignResult,
-  FloorResult, ComplianceCheck, ZoningInput,
-} from './types';
-import { BUILDING_TYPES, ZONE_YOR9 } from './types';
-import { polygonArea, ensureCCW, edgeLength, isPlotInZoneYor9 } from './polygon';
-import { generateFloors, checkRoadEligibility, computeCompliance } from './rules';
+import type { BuildingClass, DesignResult, DesignVariant, Envelope, Polygon } from './types';
+import { BUILDING_TYPES } from './types';
+import { MR33 } from './regulations';
+import {
+  buildEnvelope, type EnvelopeContext, fmt, MIN_FLOOR_AREA_SQM, stackFloors, type StackResult, STRICT_EPS,
+} from './rules';
+import { insetPolygon, minimumWidth, unionLargest } from './polygon';
+import { assessEia, computeChecks, openSpaceRequirements, summarize } from './compliance';
+import type { JurisdictionResult } from './types';
 
-/** Generate Design A: Maximum Yield Envelope */
-export function generateDesignA(input: ZoningInput): DesignResult {
-  const polygon = ensureCCW(input.polygon);
-  const plotArea = polygonArea(polygon);
-  const roadElig = checkRoadEligibility(input.edges, plotArea);
-  
-  // Design A maximizes permissible GFA up to statutory envelope and FAR limit
-  const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig);
-  
-  return buildDesignResult(
-    'max-yield',
-    'Design A: Max-Yield Envelope',
-    'Maximizes permissible GFA within FAR 7.0, statutory setbacks, and MR 55 Clause 44 2:1 sky exposure plane.',
-    floors, polygon, plotArea, input,
-  );
+export interface DesignContext extends EnvelopeContext {
+  jurisdiction: JurisdictionResult;
+  nearTransitDeclared: boolean;
 }
 
-/** Generate Design B: Podium + Slender Tower OR Sub-EIA Courtyard Block (Open Space Optimized) */
-export function generateDesignB(input: ZoningInput): DesignResult {
-  const polygon = ensureCCW(input.polygon);
-  const plotArea = polygonArea(polygon);
-  const config = BUILDING_TYPES[input.buildingType];
-  const roadElig = checkRoadEligibility(input.edges, plotArea);
-
-  if (roadElig.highRiseAllowed && !config.maxHeightCap) {
-    // ── High-Rise Scenario: Podium + Slender Tower (Open Space Optimized) ──
-    // Floors 0 to 2: Podium base (retail / parking / amenities)
-    // Floors 3+: Slender tower inset by an extra 4m from all edges for light, ventilation, and rooftop terraces
-    const targetGFA = Math.min(roadElig.maxGFA, plotArea * ZONE_YOR9.maxFAR) * 0.78;
-    
-    const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig, {
-      targetGFA,
-      podiumFloors: 3,
-      towerInsetMeters: 4.0, // 4m inset creates slender tower profile
-    });
-    
-    return buildDesignResult(
-      'podium-tower',
-      'Design B: Podium + Slender Tower (Open Space Optimized)',
-      'Optimizes usable open space (exceeding statutory 30% OSR) via a 3-storey podium with an inset slender tower (4m extra setback) for natural ventilation, daylight, and landscaped terraces.',
-      floors, polygon, plotArea, input,
-    );
-  } else {
-    // ── Low-Rise / Narrow-Soi Scenario: Sub-EIA Courtyard Block (Open Space Optimized) ──
-    // Keeps residential units below 80 and height <= 23m to bypass costly EIA review
-    const maxUnits = 79;
-    const maxUsableGFA = (maxUnits * 40) / 0.7; // ~4,514 sqm GFA cap for 79 units
-    const maxHeightCap = Math.min(23, roadElig.maxHeight);
-    const targetGFA = Math.min(maxUsableGFA, plotArea * ZONE_YOR9.maxFAR * 0.75);
-
-    const floors = generateFloors(polygon, input.edges, input.buildingType, roadElig, {
-      targetGFA,
-      maxHeight: maxHeightCap,
-      groundInsetMeters: 2.0, // extra 2m garden setback creates courtyard open space
-    });
-
-    return buildDesignResult(
-      'sub-eia',
-      'Design B: Sub-EIA Courtyard (Open Space Optimized)',
-      'Optimizes ground open space with a 2m extra courtyard garden setback while capping units at 79 and height at 23m for fast-track EIA-exempt permitting.',
-      floors, polygon, plotArea, input,
-    );
-  }
+interface Candidate {
+  env: Envelope;
+  stack: StackResult;
+  inset: number;
+  footprint: Polygon;
+  footprintSqm: number;
+  openSpaceSqm: number;
+  totalGFA: number;
+  largestFloorSqm: number;
+  heightM: number;
+  isHighRise: boolean;
+  isExtraLarge: boolean;
+  openOk: boolean;
 }
 
-/** Build a DesignResult from generated floors */
-function buildDesignResult(
-  variant: DesignVariant,
-  label: string,
-  description: string,
-  floors: FloorResult[],
-  plotPolygon: Polygon,
-  plotArea: number,
-  input: ZoningInput,
-): DesignResult {
-  const config = BUILDING_TYPES[input.buildingType];
-  const totalGFA = floors.reduce((sum, f) => sum + f.areaSqm, 0);
-  const actualFAR = plotArea > 0 ? totalGFA / plotArea : 0;
-  const groundFloor = floors[0];
-  const groundCoverage = groundFloor ? (groundFloor.areaSqm / plotArea) * 100 : 0;
-  const openSpaceSqm = plotArea - (groundFloor?.areaSqm ?? 0);
-  const openSpacePercent = plotArea > 0 ? (openSpaceSqm / plotArea) * 100 : 0;
-  const height = floors.reduce((sum, f) => sum + f.heightM, 0);
-  const estimatedUnits = Math.floor((totalGFA * 0.7) / 40);
-  const isResidential = config.useCategory === 'residential';
-  const eiaRequired = (isResidential && height > 23) || estimatedUnits >= 80;
+type AllowCache = Map<number, { polygon: Polygon; areaSqm: number; clippedBy: number[] }>;
 
-  const roadElig = checkRoadEligibility(input.edges, plotArea);
-  const zoneCheck = isPlotInZoneYor9(input.polygonLngLat);
-  const checks = computeCompliance(plotArea, floors, input.edges, input.buildingType, roadElig, input.polygonLngLat);
-
-  let limitingConstraint: string | undefined;
-  if (actualFAR < ZONE_YOR9.maxFAR - 0.1) {
-    if (!roadElig.highRiseAllowed) {
-      limitingConstraint = `Capped at FAR ${actualFAR.toFixed(2)} vs statutory max 7.0: ${roadElig.blocker || 'Road width < 10m'} limits height to 23m (${floors.length}F max under MR 33). Boundary setbacks (2m/3m) restrict floor plate.`;
-    } else if (config.maxHeightCap && config.maxHeightCap <= 23) {
-      limitingConstraint = `Capped at FAR ${actualFAR.toFixed(2)} vs statutory max 7.0: Selected typology '${config.label}' enforces a 23m height cap (${floors.length} storeys).`;
-    } else if (roadElig.maxGFA < plotArea * ZONE_YOR9.maxFAR) {
-      limitingConstraint = `Capped at FAR ${actualFAR.toFixed(2)} vs statutory max 7.0: Road width < 18m imposes a 30,000 m² GFA cap (MR 33).`;
-    } else {
-      limitingConstraint = `FAR ${actualFAR.toFixed(2)} constrained by 2:1 sky exposure plane stepbacks (MR 55 Clause 44) and statutory setbacks.`;
-    }
-  }
-
+function evaluateInset(ctx: DesignContext, env: Envelope, inset: number, cache: AllowCache): Candidate {
+  const fp = inset <= 0 ? env.buildablePolygon : insetPolygon(env.buildablePolygon, inset).polygon;
+  const stack = stackFloors(ctx, env, fp, cache);
+  const floors = stack.floors;
+  const proj = unionLargest(floors.map((f) => f.polygon));
+  const footprintSqm = floors.length ? proj.areaSqm : 0;
+  const totalGFA = stack.totalGFA;
+  const largestFloorSqm = floors.reduce((m, f) => Math.max(m, f.areaSqm), 0);
+  const heightM = floors.length ? floors[floors.length - 1]!.topM : 0;
+  const isHighRise = heightM >= MR33.highRiseHeightM - STRICT_EPS;
+  const isExtraLarge = totalGFA >= MR33.extraLargeAreaSqm - STRICT_EPS || largestFloorSqm >= MR33.extraLargeAreaSqm - STRICT_EPS;
+  const openSpaceSqm = ctx.plotAreaSqm - footprintSqm;
+  const reqs = openSpaceRequirements(ctx.buildingType, ctx.plotAreaSqm, totalGFA, largestFloorSqm, isHighRise || isExtraLarge);
+  const openOk = reqs.filter((r) => r.applies).every((r) => openSpaceSqm + 1e-6 >= r.requiredSqm);
   return {
-    variant,
-    label,
-    description,
-    floors,
-    totalGFA: Math.round(totalGFA * 100) / 100,
-    actualFAR: Math.round(actualFAR * 100) / 100,
-    heightM: Math.round(height * 10) / 10,
-    floorCount: floors.length,
-    groundCoveragePercent: Math.round(groundCoverage * 10) / 10,
-    openSpaceSqm: Math.round(openSpaceSqm * 100) / 100,
-    openSpacePercent: Math.round(openSpacePercent * 10) / 10,
-    estimatedUnits,
-    checks,
-    eiaRequired,
-    eiaReason: eiaRequired
-      ? (height > 23 ? 'Residential building height > 23m' : `Estimated ${estimatedUnits} units ≥ 80 threshold`)
-      : undefined,
-    limitingConstraint,
-    zoneCheck: input.polygonLngLat ? {
-      inZone: zoneCheck.inZone,
-      outsideCount: zoneCheck.outsideCount,
-      message: zoneCheck.message,
-    } : undefined,
+    env, stack, inset, footprint: floors.length ? proj.polygon : [], footprintSqm, openSpaceSqm, totalGFA,
+    largestFloorSqm, heightM, isHighRise, isExtraLarge, openOk,
   };
 }
 
-/** Generate both designs */
-export function generateDesigns(input: ZoningInput): [DesignResult, DesignResult] {
-  return [generateDesignA(input), generateDesignB(input)];
+/** Max-yield candidate for one class: shrink the footprint only as far as open-space rules require. */
+function maxYieldForClass(ctx: DesignContext, cls: BuildingClass): Candidate | null {
+  const env = buildEnvelope(ctx, cls);
+  if (env.buildablePolygon.length < 3 || env.buildableAreaSqm < MIN_FLOOR_AREA_SQM) return null;
+  const cache: AllowCache = new Map();
+  const c0 = evaluateInset(ctx, env, 0, cache);
+  if (c0.stack.floors.length === 0) return null;
+  if (c0.openOk) return c0;
+  let lo = 0;
+  let hi = minimumWidth(env.buildablePolygon) / 2;
+  let best: Candidate | null = null;
+  for (let k = 0; k < 30 && hi - lo > 0.005; k++) {
+    const mid = (lo + hi) / 2;
+    const c = evaluateInset(ctx, env, mid, cache);
+    if (c.stack.floors.length > 0 && c.openOk) { best = c; hi = mid; } else { lo = mid; }
+  }
+  return best;
+}
+
+/** Candidate whose ground footprint is ≤ targetSqm (Design B objective). */
+function footprintLimitedForClass(ctx: DesignContext, cls: BuildingClass, targetSqm: number): Candidate | null {
+  const env = buildEnvelope(ctx, cls);
+  if (env.buildablePolygon.length < 3 || env.buildableAreaSqm < MIN_FLOOR_AREA_SQM) return null;
+  const cache: AllowCache = new Map();
+  let inset = 0;
+  if (env.buildableAreaSqm > targetSqm) {
+    let lo = 0;
+    let hi = minimumWidth(env.buildablePolygon) / 2;
+    for (let k = 0; k < 30 && hi - lo > 0.005; k++) {
+      const mid = (lo + hi) / 2;
+      if (insetPolygon(env.buildablePolygon, mid).areaSqm <= targetSqm) hi = mid; else lo = mid;
+    }
+    inset = hi;
+  }
+  const c = evaluateInset(ctx, env, inset, cache);
+  if (c.stack.floors.length === 0) return null;
+  if (c.openOk) return c;
+  // open-space rules still bind → shrink further
+  let lo = inset;
+  let hi = minimumWidth(env.buildablePolygon) / 2;
+  let best: Candidate | null = null;
+  for (let k = 0; k < 30 && hi - lo > 0.005; k++) {
+    const mid = (lo + hi) / 2;
+    const cc = evaluateInset(ctx, env, mid, cache);
+    if (cc.stack.floors.length > 0 && cc.openOk) { best = cc; hi = mid; } else { lo = mid; }
+  }
+  return best;
+}
+
+export function allowedClasses(ctx: DesignContext): BuildingClass[] {
+  const classes: BuildingClass[] = ['low-le9', 'low-lt23'];
+  if (ctx.roadEligibility.mr33Allowed && !BUILDING_TYPES[ctx.buildingType].lowRiseOnly) classes.push('mr33');
+  return classes;
+}
+
+function better(a: Candidate | null, b: Candidate | null): Candidate | null {
+  if (!a) return b;
+  if (!b) return a;
+  if (b.totalGFA > a.totalGFA + 0.5) return b;
+  if (a.totalGFA > b.totalGFA + 0.5) return a;
+  return b.openSpaceSqm > a.openSpaceSqm ? b : a; // equal yield → more open space
+}
+
+function limitingConstraints(ctx: DesignContext, c: Candidate, variant: DesignVariant, coverageNote?: string): string[] {
+  const out: string[] = [];
+  const env = c.env;
+  const farGFA = ctx.plotAreaSqm * 7;
+  if (variant === 'open-space' && coverageNote) out.push(coverageNote);
+  switch (c.stack.stopReason) {
+    case 'gfa-cap':
+      out.push(env.maxGFA >= farGFA - 1 ? `FAR 7.0 reached (${fmt(farGFA, 0)} m²).` : `Floor-area cap: ${env.gfaRule}.`);
+      break;
+    case 'height-limit':
+      out.push(`${env.heightRule}.`);
+      if (env.buildingClass !== 'mr33') {
+        if (!ctx.roadEligibility.mr33Allowed) out.push(ctx.roadEligibility.reason + '.');
+        else if (BUILDING_TYPES[ctx.buildingType].lowRiseOnly) out.push('This building type is limited to low-rise.');
+      }
+      break;
+    case 'sky-plane':
+      out.push(`The 2:1 sky-exposure plane (MR 55 Cl. 44) leaves no usable floor plate above L${c.stack.floors.length}.`);
+      break;
+    case 'no-buildable-area':
+      out.push('The setback footprint is too small or narrow for another storey.');
+      break;
+    case 'max-floors':
+      out.push('Model limit of 150 storeys reached.');
+      break;
+  }
+  if (variant === 'max-yield' && c.inset > 0) {
+    out.push(`Open-space rules governed the footprint: the buildable area was inset a further ${fmt(c.inset, 2)} m.`);
+  }
+  if (env.discardedAreaSqm > 1) out.push(`Setbacks split the buildable area; a disconnected ${fmt(env.discardedAreaSqm, 0)} m² piece is not used (one building mass is modelled).`);
+  if (c.totalGFA < farGFA - 1 && c.stack.stopReason !== 'gfa-cap') out.push(`FAR used ${(c.totalGFA / ctx.plotAreaSqm).toFixed(2)} of 7.00.`);
+  return out;
+}
+
+function toDesign(ctx: DesignContext, c: Candidate, variant: DesignVariant, coverageNote?: string): DesignResult {
+  const floors = c.stack.floors;
+  const residentialGFA = floors.filter((f) => f.use === 'residential').reduce((s, f) => s + f.areaSqm, 0);
+  const commercialGFA = c.totalGFA - residentialGFA;
+  const mr33Building = c.isHighRise || c.isExtraLarge;
+  const reqs = openSpaceRequirements(ctx.buildingType, ctx.plotAreaSqm, c.totalGFA, c.largestFloorSqm, mr33Building);
+  const required = Math.max(...reqs.filter((r) => r.applies).map((r) => r.requiredSqm));
+  const zoningReq = reqs.find((r) => r.id === 'zoning-osr')!.requiredSqm;
+  const permeableRequiredSqm = 0.5 * Math.max(zoningReq, required);
+  const eia = assessEia(ctx.buildingType, residentialGFA, c.heightM, c.totalGFA);
+  const checks = computeChecks({
+    plot: ctx.plot,
+    plotAreaSqm: ctx.plotAreaSqm,
+    edges: ctx.edges,
+    buildingType: ctx.buildingType,
+    jurisdiction: ctx.jurisdiction,
+    roadEligibility: ctx.roadEligibility,
+    nearTransitDeclared: ctx.nearTransitDeclared,
+    envelope: c.env,
+    floors,
+    totalGFA: c.totalGFA,
+    commercialGFA,
+    heightM: c.heightM,
+    largestFloorSqm: c.largestFloorSqm,
+    openSpaceSqm: c.openSpaceSqm,
+    openSpaceRequirements: reqs,
+    permeableRequiredSqm,
+    isHighRise: c.isHighRise,
+    isExtraLarge: c.isExtraLarge,
+    eia,
+  });
+  const isA = variant === 'max-yield';
+  return {
+    variant,
+    label: isA ? 'Design A · Maximum Yield' : 'Design B · Open Space Optimised',
+    objective: isA
+      ? 'Largest legal total floor area on this plot'
+      : 'Smaller ground footprint (~60 % of Design A) for more landscaped open space',
+    description: isA
+      ? `${c.env.classLabel}. Uses the whole buildable footprint and stacks storeys until FAR, height class, floor-area caps or the 2:1 plane stop it.`
+      : `${c.env.classLabel}. The footprint is inset ${fmt(c.inset, 2)} m from the buildable line, and the yield is recovered with extra height where the road allows.`,
+    envelope: c.env,
+    floors,
+    totalGFA: c.totalGFA,
+    residentialGFA,
+    commercialGFA,
+    far: ctx.plotAreaSqm > 0 ? c.totalGFA / ctx.plotAreaSqm : 0,
+    heightM: c.heightM,
+    floorCount: floors.length,
+    largestFloorSqm: c.largestFloorSqm,
+    footprintSqm: c.footprintSqm,
+    groundCoveragePct: (c.footprintSqm / ctx.plotAreaSqm) * 100,
+    openSpaceSqm: c.openSpaceSqm,
+    openSpacePct: (c.openSpaceSqm / ctx.plotAreaSqm) * 100,
+    footprintPolygon: c.footprint,
+    footprintInsetM: c.inset,
+    openSpaceRequirements: reqs,
+    requiredOpenSpaceSqm: required,
+    permeableRequiredSqm,
+    isHighRise: c.isHighRise,
+    isExtraLarge: c.isExtraLarge,
+    eia,
+    limitingConstraints: limitingConstraints(ctx, c, variant, coverageNote),
+    checks,
+    ...summarize(checks),
+  };
+}
+
+export const DESIGN_B_COVERAGE_RATIOS = [0.6, 0.75, 0.85] as const;
+
+export function generateDesigns(ctx: DesignContext): { designA: DesignResult | null; designB: DesignResult | null } {
+  const classes = allowedClasses(ctx);
+  let bestA: Candidate | null = null;
+  for (const cls of classes) bestA = better(bestA, maxYieldForClass(ctx, cls));
+  if (!bestA) return { designA: null, designB: null };
+  const designA = toDesign(ctx, bestA, 'max-yield');
+
+  let bestB: Candidate | null = null;
+  let usedRatio = 0;
+  for (const ratio of DESIGN_B_COVERAGE_RATIOS) {
+    const target = ratio * bestA.footprintSqm;
+    for (const cls of classes) bestB = better(bestB, footprintLimitedForClass(ctx, cls, target));
+    if (bestB) { usedRatio = ratio; break; }
+  }
+  if (!bestB) return { designA, designB: null };
+  const note = `Design objective: ground footprint ≤ ${Math.round(usedRatio * 100)} % of Design A (${fmt(bestB.footprintSqm, 0)} m² vs ${fmt(bestA.footprintSqm, 0)} m²), adding ${fmt(bestB.openSpaceSqm - bestA.openSpaceSqm, 0)} m² of open space.`;
+  return { designA, designB: toDesign(ctx, bestB, 'open-space', note) };
 }

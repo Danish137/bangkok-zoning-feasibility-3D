@@ -1,0 +1,137 @@
+[
+  {
+    "name": "app loads with map, 3D layer and initial result",
+    "ok": true,
+    "detail": "7051 ms to idle"
+  },
+  {
+    "name": "real surrounding buildings rendered (OSM building-3d)",
+    "ok": true,
+    "detail": "11 building features in view"
+  },
+  {
+    "name": "first click shows a vertex immediately",
+    "ok": true,
+    "detail": "vertex markers=1, drawn 0 ms after click event (53 ms incl. automation)"
+  },
+  {
+    "name": "live preview line from first vertex to cursor",
+    "ok": true,
+    "detail": "preview segments=1, tooltip=\"49.8 m · click to add point\""
+  },
+  {
+    "name": "translucent polygon preview once 3 points can form a polygon",
+    "ok": true,
+    "detail": "fill=1, placed line=1"
+  },
+  {
+    "name": "undo removes last vertex",
+    "ok": true,
+    "detail": "vertices=3"
+  },
+  {
+    "name": "self-crossing point rejected, drawing continues",
+    "ok": true,
+    "detail": "message shown=true, vertices=5"
+  },
+  {
+    "name": "clicking the first vertex closes the polygon",
+    "ok": true,
+    "detail": "poly vertices=5, valid=true"
+  },
+  {
+    "name": "OSM buildings inside the plot are hidden",
+    "ok": true,
+    "detail": "0 context buildings still rendered inside the plot"
+  },
+  {
+    "name": "two road edges with independent widths (18 m + 12 m) update live without reload",
+    "ok": true,
+    "detail": "roads=[{\"edgeIndex\":0,\"widthM\":18},{\"edgeIndex\":1,\"widthM\":12}], gfa 9998.99961713821 → 9998.99961713821"
+  },
+  {
+    "name": "road width 18 → 4 m recomputes setbacks live",
+    "ok": true,
+    "detail": "271 ms input→result (worker), edge-1 setback 2 → 4 m"
+  },
+  {
+    "name": "dragging a vertex reshapes the plot and recomputes",
+    "ok": true,
+    "detail": "gfa 9998.998175706867 → 9998.984750236756"
+  },
+  {
+    "name": "corner preset loads per-edge widths",
+    "ok": true,
+    "detail": "[{\"edgeIndex\":0,\"widthM\":18},{\"edgeIndex\":1,\"widthM\":12}]"
+  },
+  {
+    "name": "Design A and B are distinct and switchable",
+    "ok": true,
+    "detail": "A=41289.93758088098 m², B=41289.93516777079 m²"
+  },
+  {
+    "name": "orbit 180° renders (frame rate measured)",
+    "ok": true,
+    "detail": "58.3 fps (headless, software WebGL)"
+  },
+  {
+    "name": "clicking a storey in 3D selects it",
+    "ok": true,
+    "detail": "selectedFloor=10"
+  },
+  {
+    "name": "floor selector + schedule total reconciles with GFA",
+    "ok": true,
+    "detail": "L6, Σ=41289.94, GFA=41289.93758088098"
+  },
+  {
+    "name": "switching design in floor stage updates floors",
+    "ok": true,
+    "detail": "B floors=18"
+  },
+  {
+    "name": "hovering a rule highlights it in 3D",
+    "ok": true,
+    "detail": "hovered=sky-plane"
+  },
+  {
+    "name": "checklist shows PASS/FAIL/UNVERIFIED states; jurisdiction never PASS",
+    "ok": true,
+    "detail": "21 checks: PASS=16 FAIL=0 UNVERIFIED=3 INFO=2 N/A=0"
+  },
+  {
+    "name": "Design B has its own independent checklist",
+    "ok": true,
+    "detail": "21 checks"
+  },
+  {
+    "name": "JSON export contains both designs, schedules, sources, assumptions",
+    "ok": true,
+    "detail": "A 11 storeys, B 18 storeys"
+  },
+  {
+    "name": "plot outside Bangkok → jurisdiction FAIL",
+    "ok": true,
+    "detail": "jurisdiction=FAIL"
+  },
+  {
+    "name": "no memory leak across 48 preset/stage switches (forced GC)",
+    "ok": true,
+    "detail": "heap after GC: 34.1 → 37.1 → 43.8 MB"
+  },
+  {
+    "name": "WebGL context alive after stress",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "idle app does no work (no render loop, no state churn)",
+    "ok": true,
+    "detail": "0 map renders in 3 s idle (tiles settled: true)"
+  },
+  {
+    "name": "no console errors",
+    "ok": true,
+    "detail": ""
+  }
+]

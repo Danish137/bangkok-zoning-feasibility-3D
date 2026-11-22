@@ -1,261 +1,179 @@
-// ─── Report View ───
+// ─── Report stage panel ───
 import React, { useState } from 'react';
 import { useAppState } from '../state';
-import type { DesignResult } from '../engine/types';
+import type { DesignResult, FeasibilityResult } from '../engine/types';
+import { BUILDING_TYPES } from '../engine/types';
+import { ASSUMPTIONS, SOURCES, YOR9, type LegalSource } from '../engine/regulations';
+import { Button, Callout, Section, fmtNum } from './ui';
+
+export function buildReport(r: FeasibilityResult) {
+  const designJson = (d: DesignResult | null) => d && ({
+    variant: d.variant,
+    label: d.label,
+    objective: d.objective,
+    buildingClass: d.envelope.classLabel,
+    compliant: d.compliant,
+    failCount: d.failCount,
+    unverifiedCount: d.unverifiedCount,
+    totalFloorAreaSqm: d.totalGFA,
+    residentialFloorAreaSqm: d.residentialGFA,
+    commercialFloorAreaSqm: d.commercialGFA,
+    far: d.far,
+    heightM: d.heightM,
+    storeys: d.floorCount,
+    footprintSqm: d.footprintSqm,
+    groundCoveragePct: d.groundCoveragePct,
+    openSpaceSqm: d.openSpaceSqm,
+    openSpaceRequirements: d.openSpaceRequirements,
+    permeableRequiredSqm: d.permeableRequiredSqm,
+    isHighRise: d.isHighRise,
+    isExtraLarge: d.isExtraLarge,
+    eia: d.eia,
+    setbacks: d.envelope.setbacks,
+    skyPlanes: d.envelope.skyPlanes,
+    limitingConstraints: d.limitingConstraints,
+    checks: d.checks,
+    floorSchedule: d.floors.map((f) => ({
+      storey: f.index + 1, use: f.use, elevationM: f.elevationM, heightM: f.heightM, roofM: f.topM,
+      areaSqm: f.areaSqm, allowableAreaSqm: f.allowableAreaSqm, trimmed: f.isPartial,
+    })),
+  });
+  return {
+    generator: 'Bangkok Feasibility Studio (ย.9)',
+    generatedAt: new Date().toISOString(),
+    disclaimer: 'Pre-design feasibility estimate. Not a legal opinion or permit determination. Zone, road reserves and plot boundary are user inputs and must be confirmed with official documents.',
+    input: r.input,
+    site: {
+      plotAreaSqm: r.plotAreaSqm,
+      plotAreaThai: r.plotAreaThai,
+      anchor: r.anchor,
+      edges: r.edges.map((e) => ({ edge: e.index + 1, lengthM: e.lengthM, kind: e.kind, roadWidthM: e.roadWidthM ?? null })),
+      jurisdiction: r.jurisdiction,
+      roadEligibility: r.roadEligibility,
+    },
+    zoning: { zone: YOR9.code, maxFAR: YOR9.maxFAR, minOSRPctOfGFA: YOR9.minOSRFractionOfGFA * 100, maxFloorAreaSqm: r.maxFARGFA },
+    designs: { A: designJson(r.designA), B: designJson(r.designB) },
+    assumptions: ASSUMPTIONS,
+    sources: Object.values(SOURCES),
+  };
+}
 
 export function ReportView() {
-  const state = useAppState();
-  const { designA, designB, evaluation } = state;
-  const [showApiPreview, setShowApiPreview] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  if (!designA || !designB || !evaluation) {
-    return (
-      <div data-testid="report-view" className="text-xs text-neutral-500 p-4">
-        No results to report. Draw or select a plot first.
-      </div>
-    );
-  }
-
-  const apiPayload = {
-    polygon: state.polygon,
-    roadEdges: state.roadEdges,
-    roadWidth: state.roadWidth,
-    buildingType: state.buildingType,
-  };
-
-  const handleDownload = () => {
-    const report = {
-      generator: 'Bangkok 3D Zoning & Building Feasibility Tool',
-      version: '1.0.0',
-      timestamp: new Date().toISOString(),
-      zoning: {
-        zone: 'Yor.9 (ย.9)',
-        classification: 'High-Density Residential (Brown Zone)',
-        authority: 'Bangkok Comprehensive Plan B.E. 2556 (2013)',
-        baseFAR: 7.0,
-        baseOSRPercent: 4.5,
-      },
-      site: {
-        plotAreaSqm: evaluation.plotAreaSqm,
-        plotAreaThai: evaluation.plotAreaRaiNganWah,
-        roadWidthMeters: state.roadWidth,
-        roadFrontageMeters: evaluation.frontageM,
-        highRiseEligible: evaluation.highRiseEligible,
-        roadBlocker: evaluation.roadBlocker ?? null,
-      },
-      buildingType: state.buildingType,
-      designs: {
-        designA: {
-          variant: designA.variant,
-          label: designA.label,
-          totalGFASqm: designA.totalGFA,
-          actualFAR: designA.actualFAR,
-          heightMeters: designA.heightM,
-          floorCount: designA.floorCount,
-          groundCoveragePercent: designA.groundCoveragePercent,
-          openSpacePercent: designA.openSpacePercent,
-          estimatedUnits: designA.estimatedUnits,
-          eiaRequired: designA.eiaRequired,
-          complianceChecks: designA.checks,
-          floorSchedule: designA.floors.map(f => ({
-            floor: f.index + 1,
-            elevationM: f.elevationM,
-            heightM: f.heightM,
-            areaSqm: f.areaSqm,
-          })),
-        },
-        designB: {
-          variant: designB.variant,
-          label: designB.label,
-          totalGFASqm: designB.totalGFA,
-          actualFAR: designB.actualFAR,
-          heightMeters: designB.heightM,
-          floorCount: designB.floorCount,
-          groundCoveragePercent: designB.groundCoveragePercent,
-          openSpacePercent: designB.openSpacePercent,
-          estimatedUnits: designB.estimatedUnits,
-          eiaRequired: designB.eiaRequired,
-          complianceChecks: designB.checks,
-          floorSchedule: designB.floors.map(f => ({
-            floor: f.index + 1,
-            elevationM: f.elevationM,
-            heightM: f.heightM,
-            areaSqm: f.areaSqm,
-          })),
-        },
-      },
-    };
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+  const s = useAppState();
+  const r = s.result;
+  const [showApi, setShowApi] = useState(false);
+  if (!r?.valid || !r.designA) return <Callout tone="warn">Nothing to report yet. Select or draw a plot first.</Callout>;
+  const A = r.designA, B = r.designB;
+  const download = () => {
+    const blob = new Blob([JSON.stringify(buildReport(r), null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `bangkok-zoning-feasibility-report-${Date.now()}.json`;
+    a.download = `feasibility-yor9-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
-
-  const copyCurl = () => {
-    const curl = `curl -X POST https://siliconbricks.co/api/evaluate \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(apiPayload)}'`;
-    navigator.clipboard.writeText(curl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  const rows: [string, (d: DesignResult) => string][] = [
+    ['Building class', (d) => d.envelope.classLabel.split(' (')[0]!],
+    ['Total floor area', (d) => `${fmtNum(d.totalGFA)} m²`],
+    ['FAR (max 7.00)', (d) => d.far.toFixed(2)],
+    ['Height / storeys', (d) => `${fmtNum(d.heightM, 1)} m / ${d.floorCount}`],
+    ['Footprint', (d) => `${fmtNum(d.footprintSqm)} m² (${d.groundCoveragePct.toFixed(0)} %)`],
+    ['Open space', (d) => `${fmtNum(d.openSpaceSqm)} m² (${d.openSpacePct.toFixed(0)} %)`],
+    ['Open space required', (d) => `${fmtNum(d.requiredOpenSpaceSqm)} m²`],
+    ['Est. units', (d) => (d.residentialGFA > 0 ? `≈ ${d.eia.estimatedUnits}` : '—')],
+    ['EIA', (d) => (d.eia.status === 'required' ? 'Required' : d.eia.status === 'check' ? 'Check' : 'Likely not')],
+    ['Compliance', (d) => (d.compliant ? `No fails · ${d.unverifiedCount} unverified` : `${d.failCount} FAIL`)],
+  ];
+  const unverified = [...new Map([...(A.checks), ...(B?.checks ?? [])].filter((c) => c.status === 'UNVERIFIED').map((c) => [c.id, c])).values()];
 
   return (
-    <div data-testid="report-view" className="flex flex-col gap-4">
-      {/* Site Summary */}
-      <Section title="Site & Zoning Parameters">
-        <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-          <Metric label="Zoning District" value="Zone Yor.9 (Brown)" />
-          <Metric label="Plot Area" value={`${evaluation.plotAreaSqm.toLocaleString()} sqm`} />
-          <Metric label="Thai Units" value={evaluation.plotAreaRaiNganWah} />
-          <Metric label="Frontage Width" value={`${state.roadWidth}m Road`} />
-          <Metric label="Frontage Length" value={`${evaluation.frontageM}m`} />
-          <Metric label="Permit Track" value={evaluation.highRiseEligible ? 'High-Rise Eligible' : 'Low-Rise ≤23m'} />
-        </div>
-      </Section>
-
-      {/* Comparative Options */}
-      <Section title="Comparative Feasibility">
-        <div className="grid grid-cols-2 gap-2">
-          <DesignCard design={designA} badge="Option A" />
-          <DesignCard design={designB} badge="Option B" />
-        </div>
-      </Section>
-
-      {/* Floor Schedule - Design A */}
-      <Section title={`Area Schedule — ${designA.label}`}>
-        <FloorTable floors={designA.floors} totalGFA={designA.totalGFA} height={designA.heightM} />
-      </Section>
-
-      {/* Floor Schedule - Design B */}
-      <Section title={`Area Schedule — ${designB.label}`}>
-        <FloorTable floors={designB.floors} totalGFA={designB.totalGFA} height={designB.heightM} />
-      </Section>
-
-      {/* Action Buttons */}
-      <div className="flex flex-col gap-2 pt-1">
-        <button
-          data-testid="download-report"
-          onClick={handleDownload}
-          className="w-full py-2.5 px-3 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-semibold text-white shadow-lg transition-colors flex items-center justify-center gap-2"
-        >
-          <span>📥</span> Download Full JSON Report
-        </button>
-
-        <button
-          data-testid="toggle-api-payload"
-          onClick={() => setShowApiPreview(!showApiPreview)}
-          className="w-full py-1.5 px-3 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-xs font-medium text-neutral-300 transition-colors flex items-center justify-between"
-        >
-          <span>⚡ API Endpoint Payload Preview</span>
-          <span>{showApiPreview ? '▲' : '▼'}</span>
-        </button>
-
-        {showApiPreview && (
-          <div className="bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-[10px] flex flex-col gap-2">
-            <div className="flex items-center justify-between text-neutral-400">
-              <span className="font-mono text-emerald-400">POST /api/evaluate</span>
-              <button
-                onClick={copyCurl}
-                className="text-indigo-400 hover:text-indigo-300 underline"
-              >
-                {copied ? 'Copied curl!' : 'Copy cURL'}
-              </button>
-            </div>
-            <pre className="bg-neutral-900 p-2 rounded overflow-x-auto text-neutral-300 font-mono text-[9px] max-h-40">
-              {JSON.stringify(apiPayload, null, 2)}
-            </pre>
-          </div>
-        )}
+    <div data-testid="report-view" className="flex flex-col gap-5 text-xs">
+      <div className="flex gap-1.5">
+        <Button testId="download-json-btn" variant="primary" className="flex-1" onClick={download}>Download JSON report</Button>
+        <Button testId="api-preview-btn" onClick={() => setShowApi(!showApi)}>API</Button>
       </div>
-    </div>
-  );
-}
+      {showApi && (
+        <pre data-testid="api-payload" className="max-h-48 overflow-auto rounded-lg border border-slate-700 bg-slate-950 p-2 text-[9.5px] text-slate-300">
+{`POST /api/evaluate
+${JSON.stringify({ polygon: r.input.polygonLngLat, roadEdges: r.input.roadEdges, buildingType: r.input.buildingType, nearTransitDeclared: !!r.input.nearTransitDeclared }, null, 1)}`}
+        </pre>
+      )}
 
-function DesignCard({ design, badge }: { design: DesignResult; badge: string }) {
-  return (
-    <div className="bg-neutral-800/60 border border-neutral-700/60 rounded-lg p-2.5 text-[10px]">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="font-semibold text-neutral-200">{badge}</span>
-        <span className={`text-[8px] px-1.5 py-0.5 rounded font-medium ${
-          design.eiaRequired ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
-        }`}>
-          {design.eiaRequired ? 'EIA Req' : 'EIA Exempt'}
-        </span>
-      </div>
-      <div className="flex flex-col gap-1 text-neutral-400">
-        <Row label="GFA" value={`${design.totalGFA.toLocaleString()} sqm`} highlight />
-        <Row label="FAR" value={`${design.actualFAR}`} />
-        <Row label="Storeys" value={`${design.floorCount}F (${design.heightM}m)`} />
-        <Row label="Open Space" value={`${design.openSpacePercent}%`} />
-        <Row label="Est Units" value={`~${design.estimatedUnits}`} />
-      </div>
-    </div>
-  );
-}
+      <Section title="Site">
+        <table className="w-full text-[10.5px]"><tbody className="divide-y divide-slate-800">
+          <Row k="Zone" v={`${YOR9.code}: user-declared, not map-verified`} />
+          <Row k="Plot area" v={`${fmtNum(r.plotAreaSqm, 1)} m² (${r.plotAreaThai})`} />
+          <Row k="Roads" v={r.edges.filter((e) => e.kind === 'road').map((e) => `E${e.index + 1}: ${e.roadWidthM} m reserve, ${fmtNum(e.lengthM, 1)} m frontage`).join('; ') || 'None declared'} />
+          <Row k="Building type" v={BUILDING_TYPES[r.input.buildingType].label} />
+          <Row k="High-rise eligible" v={r.roadEligibility.mr33Allowed ? 'Yes' : 'No'} />
+          <Row k="FAR 7 floor area" v={`${fmtNum(r.maxFARGFA)} m²`} />
+        </tbody></table>
+      </Section>
 
-function FloorTable({ floors, totalGFA, height }: { floors: any[]; totalGFA: number; height: number }) {
-  return (
-    <div className="max-h-36 overflow-y-auto rounded border border-neutral-800">
-      <table className="w-full text-[10px]">
-        <thead className="bg-neutral-800/80 sticky top-0">
-          <tr className="text-neutral-400">
-            <th className="text-left px-2 py-1">Level</th>
-            <th className="text-right px-2 py-1">Elev</th>
-            <th className="text-right px-2 py-1">Height</th>
-            <th className="text-right px-2 py-1">Area</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-800">
-          {floors.map((f: any, i: number) => (
-            <tr key={i} className="text-neutral-300 hover:bg-neutral-800/50">
-              <td className="px-2 py-0.5 font-medium">L{i + 1}</td>
-              <td className="text-right px-2 py-0.5 text-neutral-400 font-mono">+{f.elevationM.toFixed(1)}m</td>
-              <td className="text-right px-2 py-0.5 text-neutral-400 font-mono">{f.heightM.toFixed(1)}m</td>
-              <td className="text-right px-2 py-0.5 text-neutral-200 font-mono">{f.areaSqm.toFixed(0)} sqm</td>
-            </tr>
+      <Section title="Design A vs Design B">
+        <table data-testid="comparison-table" className="w-full text-[10.5px] tabular-nums">
+          <thead className="text-slate-400"><tr><th className="py-1 text-left font-normal" /><th className="py-1 text-right">A · Max yield</th><th className="py-1 text-right">B · Open space</th></tr></thead>
+          <tbody className="divide-y divide-slate-800">
+            {rows.map(([k, f]) => (
+              <tr key={k}><td className="py-1 pr-2 text-slate-400">{k}</td><td className="py-1 text-right text-slate-100">{f(A)}</td><td className="py-1 text-right text-slate-100">{B ? f(B) : '—'}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </Section>
+
+      {[A, B].filter(Boolean).map((d) => (
+        <Section key={d!.variant} title={`${d!.label}: open space & rules`}>
+          <table className="w-full text-[10.5px] tabular-nums"><tbody className="divide-y divide-slate-800">
+            {d!.openSpaceRequirements.map((q) => (
+              <tr key={q.id}><td className="py-0.5 text-slate-400">{q.label}</td><td className="py-0.5 text-right text-slate-300">{q.applies ? `≥ ${fmtNum(q.requiredSqm)} m²` : 'n/a'}</td></tr>
+            ))}
+            <tr><td className="py-0.5 text-slate-400">Provided</td><td className="py-0.5 text-right font-semibold text-emerald-300">{fmtNum(d!.openSpaceSqm)} m²</td></tr>
+            {d!.envelope.setbacks.map((sb) => (
+              <tr key={sb.edgeIndex}><td className="py-0.5 text-slate-400">Setback E{sb.edgeIndex + 1} ({sb.kind})</td><td className="py-0.5 text-right text-slate-300">{fmtNum(sb.distanceM, 2)} m · {sb.reference}</td></tr>
+            ))}
+            <tr><td className="py-0.5 text-slate-400">Height rule</td><td className="py-0.5 text-right text-slate-300">{d!.envelope.heightRule}</td></tr>
+          </tbody></table>
+          <details className="rounded border border-slate-700/50 bg-slate-800/20 px-2 py-1">
+            <summary className="cursor-pointer text-[10.5px] text-slate-300">Floor schedule ({d!.floorCount} storeys, Σ {fmtNum(d!.totalGFA, 2)} m²)</summary>
+            <table className="mt-1 w-full text-[10px] tabular-nums"><tbody>
+              {d!.floors.map((f) => (
+                <tr key={f.index}><td className="text-slate-400">L{f.index + 1} {f.use === 'commercial' ? '(retail)' : ''}</td><td className="text-right text-slate-500">+{f.elevationM.toFixed(1)} m</td><td className="text-right text-slate-200">{f.areaSqm.toFixed(2)} m²</td></tr>
+              ))}
+            </tbody></table>
+          </details>
+        </Section>
+      ))}
+
+      <Section title="Open items (UNVERIFIED)">
+        <ul className="flex flex-col gap-1">
+          {unverified.map((c) => (
+            <li key={c.id} className="rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10.5px] text-amber-100"><b>{c.label}:</b> {c.explanation}</li>
           ))}
-        </tbody>
-        <tfoot className="bg-neutral-800/90 font-semibold text-white sticky bottom-0">
-          <tr>
-            <td className="px-2 py-1">Total</td>
-            <td className="text-right px-2 py-1 text-neutral-400 font-mono">{height}m</td>
-            <td></td>
-            <td className="text-right px-2 py-1 text-indigo-300 font-mono">{totalGFA.toLocaleString()} sqm</td>
-          </tr>
-        </tfoot>
-      </table>
+        </ul>
+      </Section>
+
+      <Section title="Assumptions">
+        <ul className="list-disc space-y-1 pl-4 text-[10.5px] leading-snug text-slate-300">
+          {ASSUMPTIONS.map((a) => <li key={a}>{a}</li>)}
+        </ul>
+      </Section>
+
+      <Section title="Legal sources">
+        <ul className="flex flex-col gap-1.5 text-[10.5px] leading-snug">
+          {(Object.values(SOURCES) as LegalSource[]).map((src) => (
+            <li key={src.id} className="rounded border border-slate-700/50 bg-slate-800/20 px-2 py-1">
+              <a href={src.url} target="_blank" rel="noreferrer" className="font-medium text-sky-300 hover:underline">{src.title}</a>
+              <div className="text-slate-400">{src.titleTh}{src.gazette ? ` · ${src.gazette}` : ''}</div>
+              <div className="text-slate-500">{src.verification}</div>
+            </li>
+          ))}
+        </ul>
+      </Section>
     </div>
   );
 }
 
-function Row({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
-  return (
-    <div className="flex justify-between items-center">
-      <span className="text-neutral-500">{label}</span>
-      <span className={highlight ? 'text-white font-semibold' : 'text-neutral-300'}>{value}</span>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <h3 className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1.5">
-        {title}
-      </h3>
-      {children}
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-neutral-800/60 border border-neutral-700/40 rounded px-2 py-1">
-      <div className="text-neutral-500 text-[9px]">{label}</div>
-      <div className="text-neutral-200 font-medium truncate">{value}</div>
-    </div>
-  );
+function Row({ k, v }: { k: string; v: string }) {
+  return <tr><td className="py-1 pr-2 align-top text-slate-400">{k}</td><td className="py-1 text-right text-slate-100">{v}</td></tr>;
 }

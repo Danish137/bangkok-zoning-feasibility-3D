@@ -1,99 +1,75 @@
-// ─── App Root Component ───
-import React from 'react';
-import { AppProvider, useAppState, useAppDispatch } from './state';
+// ─── App root ───
+import React, { useEffect } from 'react';
+import { AppProvider, useActiveDesign, useAppDispatch, useAppState } from './state';
 import { MapContainer } from './components/MapContainer';
 import { StageBar } from './components/StageBar';
 import { SidePanel } from './components/SidePanel';
 import { useEngine } from './hooks/useEngine';
+import { fmtNum } from './components/ui';
+
+function Hud() {
+  const s = useAppState();
+  const d = useActiveDesign();
+  const r = s.result;
+  if (!r?.valid || !d || s.drawing.active) return null;
+  const item = (label: string, value: React.ReactNode, tone = 'text-slate-100') => (
+    <div className="px-3">
+      <div className="text-[9.5px] uppercase tracking-wider text-slate-400">{label}</div>
+      <div className={`text-[12.5px] font-semibold tabular-nums ${tone}`}>{value}</div>
+    </div>
+  );
+  return (
+    <div data-testid="hud" className="fixed bottom-3 left-3 z-40 flex max-w-[calc(100vw-25rem)] items-center divide-x divide-slate-700/60 overflow-x-auto rounded-xl border border-slate-700/60 bg-slate-900/90 py-1.5 shadow-2xl backdrop-blur-xl max-[900px]:hidden">
+      {item('Design', s.activeDesign === 'a' ? 'A · Max yield' : 'B · Open space', s.activeDesign === 'a' ? 'text-indigo-300' : 'text-sky-300')}
+      {item('Plot', `${fmtNum(r.plotAreaSqm)} m²`)}
+      {item('Floor area', `${fmtNum(d.totalGFA)} m²`, 'text-indigo-200')}
+      {item('FAR', `${d.far.toFixed(2)} / 7.00`)}
+      {item('Height', `${fmtNum(d.heightM, 1)} m · ${d.floorCount} st.`)}
+      {item('Open space', `${d.openSpacePct.toFixed(0)} %`, 'text-emerald-300')}
+      {item('Checks', d.compliant ? `No fails · ${d.unverifiedCount} unverified` : `${d.failCount} FAIL`, d.compliant ? 'text-emerald-300' : 'text-rose-300')}
+    </div>
+  );
+}
+
+function CameraControls() {
+  const s = useAppState();
+  const dispatch = useAppDispatch();
+  if (s.polygon.length < 3) return null;
+  const btn = (label: string, title: string, kind: Parameters<typeof dispatch>[0] & { type: 'CAMERA' }, testId: string) => (
+    <button data-testid={testId} title={title} onClick={() => dispatch(kind)}
+      className="h-8 min-w-8 rounded-lg border border-slate-700/60 bg-slate-900/90 px-2 text-[11px] text-slate-200 shadow-lg backdrop-blur hover:bg-slate-800">{label}</button>
+  );
+  return (
+    <div className="fixed bottom-20 left-3 z-40 flex gap-1 max-[900px]:bottom-3">
+      {btn('⟲', 'Rotate 45° left', { type: 'CAMERA', kind: 'rotate-left' }, 'cam-rotate-left')}
+      {btn('⟳', 'Rotate 45° right', { type: 'CAMERA', kind: 'rotate-right' }, 'cam-rotate-right')}
+      {btn('Top', 'Plan view', { type: 'CAMERA', kind: 'top' }, 'cam-top')}
+      {btn('3D', 'Perspective view', { type: 'CAMERA', kind: 'perspective' }, 'cam-3d')}
+      {btn('Reset view', 'Frame the plot', { type: 'CAMERA', kind: 'reset' }, 'cam-reset')}
+    </div>
+  );
+}
 
 function AppInner() {
   useEngine();
   const state = useAppState();
   const dispatch = useAppDispatch();
-  (window as any).__dispatch__ = dispatch;
-  (window as any).__state__ = state;
-  const activeDesign = state.activeDesign === 'b' ? state.designB : state.designA;
+  useEffect(() => {
+    // test / debugging hook
+    (window as unknown as Record<string, unknown>).__BKK__ = { state, dispatch };
+  }, [state, dispatch]);
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans select-none">
-      {/* 1. Full-screen 3D MapLibre + Three.js Canvas */}
+    <div className="relative h-screen w-screen select-none overflow-hidden bg-slate-950 font-sans">
       <MapContainer />
-
-      {/* 2. Top-Left Studio Branding */}
-      <div className="fixed top-4 left-5 z-40 flex items-center gap-2.5 bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 rounded-xl px-3 py-2 shadow-2xl">
-        <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-        <div>
-          <div className="text-[11px] font-bold text-white tracking-wide uppercase flex items-center gap-1.5">
-            <span>Bangkok Zoning Studio</span>
-            <span className="text-[9px] font-normal px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
-              Yor.9
-            </span>
-          </div>
-          <div className="text-[9px] text-slate-400">
-            Sukhumvit / Thonglor · B.E. 2556 Comprehensive Plan
-          </div>
-        </div>
+      <div className="fixed left-3 top-3 z-40 rounded-xl border border-slate-700/60 bg-slate-900/90 px-3 py-2 shadow-2xl backdrop-blur-xl max-[900px]:top-16">
+        <div className="text-[12px] font-semibold tracking-wide text-white">Bangkok Feasibility Studio</div>
+        <div className="text-[10px] text-slate-400">Zone ย.9 (Yor.9) · Bangkok Plan B.E. 2556 · MR 33 / MR 55</div>
       </div>
-
-      {/* 3. Central Floating Stage Bar */}
       <StageBar />
-
-      {/* 4. Contextual Floating Side Panel */}
       <SidePanel />
-
-      {/* 5. Bottom Live Metrics HUD */}
-      {state.evaluation && (
-        <div className="fixed bottom-4 left-5 z-40 flex items-center gap-2 max-w-[calc(100vw-24rem)] overflow-x-auto py-1">
-          <div className="bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 rounded-xl px-3 py-1.5 shadow-2xl flex items-center gap-4 text-xs">
-            <div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wider">Plot Area</div>
-              <div className="font-semibold text-slate-100 font-mono">
-                {state.evaluation.plotAreaSqm.toLocaleString()} m²
-              </div>
-            </div>
-
-            <div className="w-px h-6 bg-slate-800" />
-
-            <div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wider">Permissible FAR</div>
-              <div className="font-semibold text-slate-100 font-mono">
-                {activeDesign ? activeDesign.actualFAR : state.evaluation.actualFAR} / 7.0
-              </div>
-            </div>
-
-            <div className="w-px h-6 bg-slate-800" />
-
-            <div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wider">Total GFA</div>
-              <div className="font-semibold text-indigo-300 font-mono">
-                {(activeDesign ? activeDesign.totalGFA : state.evaluation.totalGFA).toLocaleString()} m²
-              </div>
-            </div>
-
-            <div className="w-px h-6 bg-slate-800" />
-
-            <div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wider">Storeys</div>
-              <div className="font-semibold text-slate-100 font-mono">
-                {activeDesign ? activeDesign.floorCount : state.evaluation.floorCount}F ({activeDesign ? activeDesign.heightM : state.evaluation.heightM}m)
-              </div>
-            </div>
-
-            <div className="w-px h-6 bg-slate-800" />
-
-            <div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wider">EIA Status</div>
-              <div className={`font-semibold text-[10px] px-1.5 py-0.5 rounded ${
-                activeDesign?.eiaRequired
-                  ? 'bg-amber-500/20 text-amber-300'
-                  : 'bg-emerald-500/20 text-emerald-300'
-              }`}>
-                {activeDesign?.eiaRequired ? '⚠️ EIA Req' : '⚡ EIA Exempt'}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <CameraControls />
+      <Hud />
     </div>
   );
 }

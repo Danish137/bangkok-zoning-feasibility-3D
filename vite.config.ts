@@ -15,7 +15,7 @@ export default defineConfig({
     target: 'es2022',
     outDir: 'dist',
     sourcemap: true,
-    chunkSizeWarningLimit: 600,
+    chunkSizeWarningLimit: 1100, // maplibre-gl alone is ~1 MB minified
     rollupOptions: {
       output: {
         manualChunks: {

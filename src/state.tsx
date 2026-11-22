@@ -1,265 +1,307 @@
-// ─── App State & Context ───
+// ─── App state & reducer ───
 import React, { createContext, useContext, useReducer, type Dispatch } from 'react';
 import type {
-  LngLatPolygon, BuildingType, DesignVariant, PresetPlot, LngLat, PlotEdge, ZoningInput, RoadAdvisory,
+  BuildingType, FeasibilityResult, LngLat, LngLatPolygon, RoadAdvisory, RoadEdgeInput,
 } from './engine/types';
-import type { DesignResult, EvaluationResult } from './engine/types';
 import { PRESET_PLOTS } from './engine/presets';
-import { anchorAtCentroid, polygonToMetric } from './engine/geo';
-import { ensureCCW, normalizePolygonWinding, isPlotInZoneYor9 } from './engine/polygon';
-import { evaluate } from './engine/rules';
-import { generateDesigns } from './engine/designs';
+import { isSelfIntersecting, normalizePolygonWinding, pathSegmentCrosses } from './engine/polygon';
+import { runFeasibility } from './engine/feasibility';
 
 export type Stage = 'site' | 'building' | 'floor' | 'compliance' | 'report';
+export type GuideKey = 'buildable' | 'envelope' | 'skyPlane' | 'openSpace' | 'threshold23' | 'roads';
 
-export interface AppState {
-  // Navigation
-  stage: Stage;
-
-  // Drawing mode & Warnings
-  isDrawing: boolean;
-  roadEncroachment: RoadAdvisory | null;
-  isInsideZoneYor9: boolean;
-  zoneMessage?: string;
-
-  // Plot
-  polygon: LngLatPolygon;
-  roadEdges: number[];
-  roadWidth: number;
-  buildingType: BuildingType;
-  activePresetId: string | null;
-
-  // Design
-  activeDesign: 'a' | 'b' | 'envelope';
-  selectedFloor: number | null;
-  showEnvelope: boolean;
-  showSetbacks: boolean;
-  showSkyPlane: boolean;
-  showHeightCap: boolean;
-  showOSR: boolean;
-  sectionCutaway: boolean;
-
-  // Interactive highlighting
-  hoveredRule: string | null;
-
-  // Results (computed)
-  designA: DesignResult | null;
-  designB: DesignResult | null;
-  evaluation: EvaluationResult | null;
+export interface DrawingState {
+  active: boolean;
+  vertices: LngLat[];
+  message: string | null;
 }
 
+export interface AppState {
+  stage: Stage;
+  drawing: DrawingState;
+  /** Committed plot, always CCW (so edge indices are stable for the engine) */
+  polygon: LngLatPolygon;
+  roadEdges: RoadEdgeInput[];
+  buildingType: BuildingType;
+  nearTransitDeclared: boolean;
+  activePresetId: string | null;
+  /** Plot before the current drawing session (restored on cancel) */
+  previousPlot: { polygon: LngLatPolygon; roadEdges: RoadEdgeInput[]; presetId: string | null } | null;
+  plotMessage: string | null;
+
+  activeDesign: 'a' | 'b';
+  selectedFloor: number | null;
+  sectionCutaway: boolean;
+  guides: Record<GuideKey, boolean>;
+  hoveredCheck: string | null;
+  focusedCheck: string | null;
+  focusedEdge: number | null;
+
+  result: FeasibilityResult | null;
+  computing: boolean;
+  roadAdvisory: RoadAdvisory[];
+  cameraCommand: { kind: 'reset' | 'rotate-left' | 'rotate-right' | 'top' | 'perspective'; n: number } | null;
+}
+
+export const DEFAULT_ROAD_WIDTH = 10;
 const defaultPreset = PRESET_PLOTS[0]!;
 
-function computeInitialPresetResults() {
+function normalizePreset(polygon: LngLatPolygon, roadEdges: RoadEdgeInput[]) {
+  const norm = normalizePolygonWinding(polygon, roadEdges.map((r) => r.edgeIndex));
+  return {
+    polygon: norm.vertices,
+    roadEdges: roadEdges.map((r) => ({ edgeIndex: norm.remap(r.edgeIndex), widthM: r.widthM })),
+  };
+}
+
+const initialPlot = normalizePreset(defaultPreset.polygon, defaultPreset.roadEdges);
+
+function computeInitial(): FeasibilityResult | null {
   try {
-    const anchor = anchorAtCentroid(defaultPreset.polygon);
-    const metricPoly = polygonToMetric(anchor, defaultPreset.polygon);
-    const ccwPoly = ensureCCW(metricPoly);
-    const edges: PlotEdge[] = ccwPoly.map((_, i) => {
-      const isRoad = defaultPreset.roadEdges.includes(i);
-      return {
-        index: i,
-        start: ccwPoly[i]!,
-        end: ccwPoly[(i + 1) % ccwPoly.length]!,
-        type: isRoad ? 'road' : 'side',
-        roadWidth: isRoad ? defaultPreset.roadWidth : undefined,
-      };
-    });
-    const input: ZoningInput = {
-      polygon: ccwPoly,
-      edges,
-      buildingType: defaultPreset.buildingType,
-      roadWidths: new Map(defaultPreset.roadEdges.map((i) => [i, defaultPreset.roadWidth])),
-      polygonLngLat: defaultPreset.polygon,
-    };
-    const evaluation = evaluate(input);
-    const [designA, designB] = generateDesigns(input);
-    return { designA, designB, evaluation };
+    return runFeasibility({ polygonLngLat: initialPlot.polygon, roadEdges: initialPlot.roadEdges, buildingType: defaultPreset.buildingType });
   } catch {
-    return { designA: null, designB: null, evaluation: null };
+    return null;
   }
 }
 
-const initialResults = computeInitialPresetResults();
-
 export const initialState: AppState = {
   stage: 'site',
-  isDrawing: false,
-  roadEncroachment: null,
-  isInsideZoneYor9: true,
-  zoneMessage: 'Verified within Zone Yor.9 (High-Density Residential, Brown Zone).',
-  polygon: defaultPreset.polygon,
-  roadEdges: defaultPreset.roadEdges,
-  roadWidth: defaultPreset.roadWidth,
+  drawing: { active: false, vertices: [], message: null },
+  polygon: initialPlot.polygon,
+  roadEdges: initialPlot.roadEdges,
   buildingType: defaultPreset.buildingType,
+  nearTransitDeclared: false,
   activePresetId: defaultPreset.id,
+  previousPlot: null,
+  plotMessage: null,
   activeDesign: 'a',
-  selectedFloor: 0,
-  showEnvelope: false,
-  showSetbacks: true,
-  showSkyPlane: true,
-  showHeightCap: true,
-  showOSR: true,
+  selectedFloor: null,
   sectionCutaway: false,
-  hoveredRule: null,
-  designA: initialResults.designA,
-  designB: initialResults.designB,
-  evaluation: initialResults.evaluation,
+  guides: { buildable: true, envelope: false, skyPlane: true, openSpace: true, threshold23: false, roads: true },
+  hoveredCheck: null,
+  focusedCheck: null,
+  focusedEdge: null,
+  result: computeInitial(),
+  computing: false,
+  roadAdvisory: [],
+  cameraCommand: null,
 };
 
 export type AppAction =
   | { type: 'SET_STAGE'; stage: Stage }
   | { type: 'START_DRAWING' }
+  | { type: 'ADD_DRAFT_VERTEX'; coord: LngLat }
+  | { type: 'UNDO_DRAFT_VERTEX' }
+  | { type: 'FINISH_DRAWING' }
   | { type: 'CANCEL_DRAWING' }
-  | { type: 'FINISH_DRAWING'; polygon: LngLatPolygon }
   | { type: 'CLEAR_PLOT' }
-  | { type: 'SET_ROAD_ENCROACHMENT'; encroachment: RoadAdvisory | null }
-  | { type: 'SET_POLYGON'; polygon: LngLatPolygon }
-  | { type: 'UPDATE_VERTEX'; index: number; coord: LngLat }
-  | { type: 'SET_ROAD_EDGES'; roadEdges: number[] }
+  | { type: 'SET_PRESET'; presetId: string }
+  | { type: 'MOVE_VERTEX'; index: number; coord: LngLat }
   | { type: 'TOGGLE_ROAD_EDGE'; edgeIndex: number }
-  | { type: 'SET_ROAD_WIDTH'; width: number }
+  | { type: 'SET_ROAD_WIDTH'; edgeIndex: number; widthM: number }
   | { type: 'SET_BUILDING_TYPE'; buildingType: BuildingType }
-  | { type: 'SET_PRESET'; presetId: string; polygon: LngLatPolygon; roadEdges: number[]; roadWidth: number; buildingType: BuildingType }
-  | { type: 'SET_ACTIVE_DESIGN'; design: 'a' | 'b' | 'envelope' }
+  | { type: 'SET_TRANSIT'; value: boolean }
+  | { type: 'SET_ACTIVE_DESIGN'; design: 'a' | 'b' }
   | { type: 'SET_SELECTED_FLOOR'; floor: number | null }
-  | { type: 'TOGGLE_GUIDE'; guide: 'envelope' | 'setbacks' | 'skyPlane' | 'heightCap' | 'osr' }
+  | { type: 'TOGGLE_GUIDE'; guide: GuideKey }
   | { type: 'TOGGLE_SECTION_CUTAWAY' }
-  | { type: 'SET_HOVERED_RULE'; rule: string | null }
-  | { type: 'SET_RESULTS'; designA: DesignResult; designB: DesignResult; evaluation: EvaluationResult }
-  | { type: 'CLEAR_RESULTS' };
+  | { type: 'HOVER_CHECK'; id: string | null }
+  | { type: 'FOCUS_CHECK'; id: string | null }
+  | { type: 'FOCUS_EDGE'; edgeIndex: number | null }
+  | { type: 'COMPUTING' }
+  | { type: 'SET_RESULT'; result: FeasibilityResult | null }
+  | { type: 'SET_ROAD_ADVISORY'; advisory: RoadAdvisory[] }
+  | { type: 'CAMERA'; kind: NonNullable<AppState['cameraCommand']>['kind'] }
+  | { type: 'DISMISS_PLOT_MESSAGE' };
+
+function resetSelection(s: AppState): Partial<AppState> {
+  return { selectedFloor: null, focusedCheck: null, hoveredCheck: null, focusedEdge: null };
+}
 
 export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'SET_STAGE':
-      return { ...state, stage: action.stage };
+      if (state.drawing.active && action.stage !== 'site') return state;
+      return { ...state, stage: action.stage, focusedCheck: null, hoveredCheck: null };
+
     case 'START_DRAWING':
       return {
         ...state,
-        isDrawing: true,
-        polygon: [],
+        ...resetSelection(state),
+        stage: 'site',
+        drawing: { active: true, vertices: [], message: null },
+        previousPlot: state.polygon.length >= 3 ? { polygon: state.polygon, roadEdges: state.roadEdges, presetId: state.activePresetId } : state.previousPlot,
+        plotMessage: null,
+        roadAdvisory: [],
+      };
+
+    case 'ADD_DRAFT_VERTEX': {
+      if (!state.drawing.active) return state;
+      const v = state.drawing.vertices;
+      const last = v[v.length - 1];
+      if (last && Math.abs(last[0] - action.coord[0]) < 1e-9 && Math.abs(last[1] - action.coord[1]) < 1e-9) return state;
+      if (pathSegmentCrosses(v, action.coord)) {
+        return { ...state, drawing: { ...state.drawing, message: 'That segment would cross an existing edge. Choose another point.' } };
+      }
+      return { ...state, drawing: { ...state.drawing, vertices: [...v, action.coord], message: null } };
+    }
+
+    case 'UNDO_DRAFT_VERTEX':
+      if (!state.drawing.active) return state;
+      return { ...state, drawing: { ...state.drawing, vertices: state.drawing.vertices.slice(0, -1), message: null } };
+
+    case 'FINISH_DRAWING': {
+      if (!state.drawing.active) return state;
+      const v = state.drawing.vertices;
+      if (v.length < 3) {
+        return { ...state, drawing: { ...state.drawing, message: 'Place at least three points before finishing.' } };
+      }
+      if (isSelfIntersecting(v)) {
+        return { ...state, drawing: { ...state.drawing, message: 'The closing edge would cross another edge. Undo a point or move it.' } };
+      }
+      const norm = normalizePolygonWinding(v);
+      return {
+        ...state,
+        drawing: { active: false, vertices: [], message: null },
+        polygon: norm.vertices,
         roadEdges: [],
         activePresetId: null,
-        designA: null,
-        designB: null,
-        evaluation: null,
-        selectedFloor: 0,
-        stage: 'site',
-        roadEncroachment: null,
-      };
-    case 'CANCEL_DRAWING':
-      return {
-        ...state,
-        isDrawing: false,
-        polygon: state.polygon.length >= 3 ? state.polygon : defaultPreset.polygon,
-        roadEdges: state.polygon.length >= 3 ? state.roadEdges : defaultPreset.roadEdges,
-        activePresetId: state.polygon.length >= 3 ? state.activePresetId : defaultPreset.id,
-      };
-    case 'FINISH_DRAWING': {
-      const normalized = normalizePolygonWinding(action.polygon, [0]);
-      const zone = isPlotInZoneYor9(normalized.vertices);
-      return {
-        ...state,
-        isDrawing: false,
-        polygon: normalized.vertices,
-        roadEdges: normalized.roadEdges.length > 0 ? normalized.roadEdges : [0],
-        activePresetId: null,
-        selectedFloor: 0,
-        isInsideZoneYor9: zone.inZone,
-        zoneMessage: zone.message,
+        previousPlot: null,
+        plotMessage: 'Plot created. Now click the edge(s) that face a public road and set each road width.',
+        cameraCommand: { kind: 'reset', n: (state.cameraCommand?.n ?? 0) + 1 },
       };
     }
+
+    case 'CANCEL_DRAWING': {
+      if (!state.drawing.active) return state;
+      const prev = state.previousPlot;
+      return {
+        ...state,
+        drawing: { active: false, vertices: [], message: null },
+        polygon: prev ? prev.polygon : state.polygon,
+        roadEdges: prev ? prev.roadEdges : state.roadEdges,
+        activePresetId: prev ? prev.presetId : state.activePresetId,
+        previousPlot: null,
+      };
+    }
+
     case 'CLEAR_PLOT':
       return {
         ...state,
+        ...resetSelection(state),
+        stage: 'site',
+        drawing: { active: false, vertices: [], message: null },
         polygon: [],
         roadEdges: [],
         activePresetId: null,
-        designA: null,
-        designB: null,
-        evaluation: null,
-        selectedFloor: 0,
-        isDrawing: false,
-        roadEncroachment: null,
-        isInsideZoneYor9: true,
-        zoneMessage: undefined,
+        previousPlot: null,
+        plotMessage: null,
+        result: null,
+        roadAdvisory: [],
       };
-    case 'SET_ROAD_ENCROACHMENT':
-      return { ...state, roadEncroachment: action.encroachment };
-    case 'SET_POLYGON': {
-      const normalized = normalizePolygonWinding(action.polygon, state.roadEdges);
-      const zone = isPlotInZoneYor9(normalized.vertices);
-      return {
-        ...state,
-        polygon: normalized.vertices,
-        roadEdges: normalized.roadEdges,
-        activePresetId: null,
-        isInsideZoneYor9: zone.inZone,
-        zoneMessage: zone.message,
-      };
-    }
-    case 'UPDATE_VERTEX': {
-      const nextPoly = [...state.polygon];
-      nextPoly[action.index] = action.coord;
-      const zone = isPlotInZoneYor9(nextPoly);
-      return {
-        ...state,
-        polygon: nextPoly,
-        activePresetId: null,
-        isInsideZoneYor9: zone.inZone,
-        zoneMessage: zone.message,
-      };
-    }
-    case 'SET_ROAD_EDGES':
-      return { ...state, roadEdges: action.roadEdges };
-    case 'TOGGLE_ROAD_EDGE': {
-      const idx = action.edgeIndex;
-      const edges = state.roadEdges.includes(idx)
-        ? state.roadEdges.filter((e) => e !== idx)
-        : [...state.roadEdges, idx];
-      return { ...state, roadEdges: edges };
-    }
-    case 'SET_ROAD_WIDTH':
-      return { ...state, roadWidth: action.width };
-    case 'SET_BUILDING_TYPE':
-      return { ...state, buildingType: action.buildingType };
+
     case 'SET_PRESET': {
-      const normalized = normalizePolygonWinding(action.polygon, action.roadEdges);
-      const zone = isPlotInZoneYor9(normalized.vertices);
+      const p = PRESET_PLOTS.find((x) => x.id === action.presetId);
+      if (!p) return state;
+      const norm = normalizePreset(p.polygon, p.roadEdges);
       return {
         ...state,
-        polygon: normalized.vertices,
-        roadEdges: normalized.roadEdges,
-        roadWidth: action.roadWidth,
-        buildingType: action.buildingType,
-        activePresetId: action.presetId,
-        selectedFloor: 0,
-        isInsideZoneYor9: zone.inZone,
-        zoneMessage: zone.message,
+        ...resetSelection(state),
+        drawing: { active: false, vertices: [], message: null },
+        polygon: norm.polygon,
+        roadEdges: norm.roadEdges,
+        buildingType: p.buildingType,
+        activePresetId: p.id,
+        previousPlot: null,
+        plotMessage: null,
+        roadAdvisory: [],
+        cameraCommand: { kind: 'reset', n: (state.cameraCommand?.n ?? 0) + 1 },
       };
     }
+
+    case 'MOVE_VERTEX': {
+      if (action.index < 0 || action.index >= state.polygon.length) return state;
+      const next = state.polygon.map((p, i) => (i === action.index ? action.coord : p)) as LngLatPolygon;
+      if (isSelfIntersecting(next)) {
+        return { ...state, plotMessage: 'That move would make the boundary cross itself, so it was not applied.' };
+      }
+      const norm = normalizePolygonWinding(next, state.roadEdges.map((r) => r.edgeIndex));
+      return {
+        ...state,
+        polygon: norm.vertices,
+        roadEdges: state.roadEdges.map((r) => ({ edgeIndex: norm.remap(r.edgeIndex), widthM: r.widthM })),
+        activePresetId: null,
+        plotMessage: norm.wasReversed ? 'The plot was flipped; road edges were remapped to the same physical boundaries.' : null,
+      };
+    }
+
+    case 'TOGGLE_ROAD_EDGE': {
+      if (action.edgeIndex < 0 || action.edgeIndex >= state.polygon.length) return state;
+      const exists = state.roadEdges.some((r) => r.edgeIndex === action.edgeIndex);
+      const lastWidth = state.roadEdges[state.roadEdges.length - 1]?.widthM ?? DEFAULT_ROAD_WIDTH;
+      return {
+        ...state,
+        roadEdges: exists
+          ? state.roadEdges.filter((r) => r.edgeIndex !== action.edgeIndex)
+          : [...state.roadEdges, { edgeIndex: action.edgeIndex, widthM: lastWidth }].sort((a, b) => a.edgeIndex - b.edgeIndex),
+        activePresetId: null,
+        plotMessage: null,
+      };
+    }
+
+    case 'SET_ROAD_WIDTH':
+      return {
+        ...state,
+        roadEdges: state.roadEdges.map((r) => (r.edgeIndex === action.edgeIndex ? { ...r, widthM: action.widthM } : r)),
+        activePresetId: null,
+      };
+
+    case 'SET_BUILDING_TYPE':
+      return { ...state, buildingType: action.buildingType, selectedFloor: null };
+
+    case 'SET_TRANSIT':
+      return { ...state, nearTransitDeclared: action.value };
+
     case 'SET_ACTIVE_DESIGN':
-      return { ...state, activeDesign: action.design };
+      return { ...state, activeDesign: action.design, selectedFloor: null, focusedCheck: null };
+
     case 'SET_SELECTED_FLOOR':
       return { ...state, selectedFloor: action.floor };
-    case 'TOGGLE_GUIDE': {
-      const key = {
-        envelope: 'showEnvelope',
-        setbacks: 'showSetbacks',
-        skyPlane: 'showSkyPlane',
-        heightCap: 'showHeightCap',
-        osr: 'showOSR',
-      }[action.guide] as keyof AppState;
-      return { ...state, [key]: !state[key] };
-    }
+
+    case 'TOGGLE_GUIDE':
+      return { ...state, guides: { ...state.guides, [action.guide]: !state.guides[action.guide] } };
+
     case 'TOGGLE_SECTION_CUTAWAY':
       return { ...state, sectionCutaway: !state.sectionCutaway };
-    case 'SET_HOVERED_RULE':
-      return { ...state, hoveredRule: action.rule };
-    case 'SET_RESULTS':
-      return { ...state, designA: action.designA, designB: action.designB, evaluation: action.evaluation };
-    case 'CLEAR_RESULTS':
-      return { ...state, designA: null, designB: null, evaluation: null };
+
+    case 'HOVER_CHECK':
+      return { ...state, hoveredCheck: action.id };
+
+    case 'FOCUS_CHECK':
+      return { ...state, focusedCheck: state.focusedCheck === action.id ? null : action.id };
+
+    case 'FOCUS_EDGE':
+      return { ...state, focusedEdge: action.edgeIndex };
+
+    case 'COMPUTING':
+      return { ...state, computing: true };
+
+    case 'SET_RESULT': {
+      const r = action.result;
+      const design = state.activeDesign === 'b' ? r?.designB : r?.designA;
+      const floorOk = state.selectedFloor !== null && design && state.selectedFloor < design.floors.length;
+      return { ...state, result: r, computing: false, selectedFloor: floorOk ? state.selectedFloor : null };
+    }
+
+    case 'SET_ROAD_ADVISORY':
+      return { ...state, roadAdvisory: action.advisory };
+
+    case 'CAMERA':
+      return { ...state, cameraCommand: { kind: action.kind, n: (state.cameraCommand?.n ?? 0) + 1 } };
+
+    case 'DISMISS_PLOT_MESSAGE':
+      return { ...state, plotMessage: null };
+
     default:
       return state;
   }
@@ -272,9 +314,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   return (
     <AppStateContext.Provider value={state}>
-      <AppDispatchContext.Provider value={dispatch}>
-        {children}
-      </AppDispatchContext.Provider>
+      <AppDispatchContext.Provider value={dispatch}>{children}</AppDispatchContext.Provider>
     </AppStateContext.Provider>
   );
 }
@@ -285,4 +325,10 @@ export function useAppState() {
 
 export function useAppDispatch() {
   return useContext(AppDispatchContext);
+}
+
+/** Active design helper */
+export function useActiveDesign() {
+  const s = useAppState();
+  return s.activeDesign === 'b' ? s.result?.designB ?? null : s.result?.designA ?? null;
 }

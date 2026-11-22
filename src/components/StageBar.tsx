@@ -1,46 +1,34 @@
-// ─── Floating Stage Navigation Bar ───
+// ─── Stage navigation ───
 import React from 'react';
-import { useAppState, useAppDispatch, type Stage } from '../state';
+import { useAppDispatch, useAppState, type Stage } from '../state';
 
-const STAGES: { id: Stage; label: string; icon: string; num: string }[] = [
-  { id: 'site', label: 'Site', icon: '📍', num: '1' },
-  { id: 'building', label: 'Building', icon: '🏗️', num: '2' },
-  { id: 'floor', label: 'Floor', icon: '🏢', num: '3' },
-  { id: 'compliance', label: 'Compliance', icon: '⚖️', num: '4' },
-  { id: 'report', label: 'Report', icon: '📊', num: '5' },
+export const STAGES: { id: Stage; label: string }[] = [
+  { id: 'site', label: 'Site' },
+  { id: 'building', label: 'Building' },
+  { id: 'floor', label: 'Floor' },
+  { id: 'compliance', label: 'Compliance' },
+  { id: 'report', label: 'Report' },
 ];
 
 export function StageBar() {
-  const { stage, polygon } = useAppState();
+  const s = useAppState();
   const dispatch = useAppDispatch();
-  const hasPolygon = polygon.length >= 3;
-
+  const ready = !!s.result?.designA && !s.drawing.active;
   return (
-    <nav
-      data-testid="stage-bar"
-      className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 rounded-full px-2 py-1.5 shadow-2xl"
-    >
-      {STAGES.map((s) => {
-        const isActive = stage === s.id;
-        const isDisabled = s.id !== 'site' && !hasPolygon;
+    <nav data-testid="stage-bar" className="fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-slate-700/60 bg-slate-900/90 p-1 shadow-2xl backdrop-blur-xl max-[900px]:left-3 max-[900px]:translate-x-0">
+      {STAGES.map((st, i) => {
+        const active = s.stage === st.id;
+        const disabled = st.id !== 'site' && !ready;
         return (
           <button
-            key={s.id}
-            data-testid={`stage-${s.id}`}
-            disabled={isDisabled}
-            onClick={() => dispatch({ type: 'SET_STAGE', stage: s.id })}
-            className={`
-              flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 select-none
-              ${isActive
-                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 font-semibold'
-                : isDisabled
-                  ? 'text-slate-600 cursor-not-allowed'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-              }
-            `}
+            key={st.id}
+            data-testid={`stage-${st.id}`}
+            disabled={disabled}
+            onClick={() => dispatch({ type: 'SET_STAGE', stage: st.id })}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11.5px] font-medium transition-colors ${active ? 'bg-indigo-600 text-white shadow shadow-indigo-900/50' : disabled ? 'cursor-not-allowed text-slate-600' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}
           >
-            <span className="text-xs">{s.icon}</span>
-            <span>{s.label}</span>
+            <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[9.5px] ${active ? 'bg-white/20' : 'bg-slate-700/70'}`}>{i + 1}</span>
+            {st.label}
           </button>
         );
       })}

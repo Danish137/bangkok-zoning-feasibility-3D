@@ -1,239 +1,282 @@
 // ─── Bangkok Zoning & Building Feasibility Tool ───
-// Shared type definitions for the engine module
-// Zero DOM / framework dependencies
+// Shared engine type definitions. Zero DOM / framework dependencies.
 
 /** WGS84 coordinate [longitude, latitude] */
 export type LngLat = [number, number];
-
-/** 2D point in local metric space [x_meters, y_meters] from anchor */
+/** Local metric point [x east (m), y north (m)] relative to the plot anchor */
 export type MetricPoint = [number, number];
-
-/** Polygon as array of vertices (first != last, CCW winding) */
+/** Simple polygon, open ring (first != last). Engine polygons are CCW. */
 export type Polygon = MetricPoint[];
-
-/** Polygon in WGS84 */
 export type LngLatPolygon = LngLat[];
 
-/** Edge classification */
-export type EdgeType = 'road' | 'side' | 'rear';
-
-/** Edge definition */
-export interface PlotEdge {
-  index: number;        // index of start vertex in polygon
-  start: MetricPoint;
-  end: MetricPoint;
-  type: EdgeType;
-  /** Road width in meters (only relevant if type === 'road') */
-  roadWidth?: number;
-}
-
-/** Building type selector */
+// ── Building types ──
 export type BuildingType =
   | 'low-rise-condo'
   | 'high-rise-condo'
   | 'commercial-office'
-  | 'mixed-use-shophouse';
+  | 'mixed-use';
 
-/** Building type configuration */
+export type UseCategory = 'residential' | 'commercial';
+
 export interface BuildingTypeConfig {
   label: string;
-  floorToFloor: number;        // meters per typical floor
-  groundFloorHeight?: number;  // meters, if different from typical
-  maxHeightCap?: number;       // hard cap in meters (e.g. 23m for low-rise)
-  useCategory: 'residential' | 'commercial';
+  short: string;
+  description: string;
+  floorToFloor: number;
+  groundFloorHeight?: number;
+  /** Only buildings below the MR 33 high-rise / extra-large thresholds */
+  lowRiseOnly?: boolean;
+  /** Use of the building for open-space / zoning purposes */
+  use: 'residential' | 'office' | 'mixed';
+  /** Mixed-use: number of lowest storeys designed as retail (subject to Plan Clause 16 (9)) */
+  commercialPodiumFloors?: number;
 }
 
 export const BUILDING_TYPES: Record<BuildingType, BuildingTypeConfig> = {
   'low-rise-condo': {
-    label: 'Low-Rise Condo',
+    label: 'Low-rise condominium',
+    short: 'Low-rise condo',
+    description: 'Residential condominium kept below 23 m and 10,000 m², so MR 33 does not apply',
     floorToFloor: 3.0,
-    maxHeightCap: 23,
-    useCategory: 'residential',
+    lowRiseOnly: true,
+    use: 'residential',
   },
   'high-rise-condo': {
-    label: 'High-Rise Condo',
+    label: 'High-rise condominium',
+    short: 'High-rise condo',
+    description: 'Residential condominium; becomes an MR 33 high-rise / extra-large building where the road allows it',
     floorToFloor: 3.0,
-    useCategory: 'residential',
+    use: 'residential',
   },
   'commercial-office': {
-    label: 'Commercial / Office',
+    label: 'Office building',
+    short: 'Office',
+    description: 'Private office building (non-residential open-space rates; Plan Clause 16 (10) size limit)',
     floorToFloor: 3.8,
-    useCategory: 'commercial',
+    groundFloorHeight: 4.5,
+    use: 'office',
   },
-  'mixed-use-shophouse': {
-    label: 'Mixed-Use Shophouse',
+  'mixed-use': {
+    label: 'Mixed-use (retail podium + residential)',
+    short: 'Mixed-use',
+    description: 'Two retail storeys with residential above; residential open-space rates apply because the building is also residential',
     floorToFloor: 3.2,
-    groundFloorHeight: 4.2,
-    maxHeightCap: 23,
-    useCategory: 'residential',  // treated as residential for OSR
+    groundFloorHeight: 4.5,
+    use: 'mixed',
+    commercialPodiumFloors: 2,
   },
 };
 
-/** Official Zone Yor.9 spatial boundary polygon (WGS84 [lng, lat]) */
-export const ZONE_YOR9_BOUNDARY: LngLatPolygon = [
-  [100.5580, 13.7480], // NW: Asok Montri / New Phetchaburi intersection
-  [100.6000, 13.7460], // NE: Khlong Saen Saep / Sukhumvit 71
-  [100.6020, 13.7150], // SE: Khlong Phra Khanong / Rama IV
-  [100.5620, 13.7160], // SW: Rama IV / Khlong Toei
-];
+// ── Site input ──
+export interface RoadEdgeInput {
+  edgeIndex: number;
+  /** Public road reserve width (เขตทาง) in metres */
+  widthM: number;
+}
 
-/** Zone Yor.9 constants */
-export const ZONE_YOR9 = {
-  name: 'Yor.9 (ย.9)',
-  description: 'High-Density Residential (Brown Zone)',
-  maxFAR: 7.0,
-  minOSRPercent: 4.5,  // percent of GFA
-  center: [100.5760, 13.7308] as LngLat,
-  boundary: ZONE_YOR9_BOUNDARY,
-} as const;
+export interface SiteInput {
+  polygonLngLat: LngLatPolygon;
+  roadEdges: RoadEdgeInput[];
+  buildingType: BuildingType;
+  /** User declares the plot lies within 500 m of a mass-transit station (unverified) */
+  nearTransitDeclared?: boolean;
+}
 
-/** Setback rule result for one edge at one floor level */
+export type EdgeKind = 'road' | 'side' | 'rear';
+
+export interface PlotEdge {
+  index: number;
+  start: MetricPoint;
+  end: MetricPoint;
+  lengthM: number;
+  kind: EdgeKind;
+  roadWidthM?: number;
+}
+
+// ── Envelope ──
+/** MR-based building classes; each has its own legal envelope */
+export type BuildingClass = 'low-le9' | 'low-lt23' | 'mr33';
+
 export interface EdgeSetback {
   edgeIndex: number;
-  edgeType: EdgeType;
-  setbackMeters: number;
-  rule: string;  // statutory reference
+  kind: EdgeKind;
+  distanceM: number;
+  /** Human-readable derivation, e.g. "MR 55 Cl. 41(1): 6 m from centreline − 4 m half-road" */
+  basis: string;
+  reference: string;
 }
 
-/** Sky plane clip result */
-export interface SkyPlaneClip {
-  floorIndex: number;
-  elevationM: number;
-  clipDistanceFromRoad: number;
-  roadEdgeIndex: number;
+export interface SkyPlane {
+  edgeIndex: number;
+  roadWidthM: number;
+  active: boolean;
+  reason: string;
 }
 
-/** Single floor result */
-export interface FloorResult {
-  index: number;          // 0-based floor number
-  elevationM: number;     // bottom of floor slab
-  heightM: number;        // floor-to-floor height
-  polygon: Polygon;       // the actual floor polygon after setbacks + sky plane
-  areaSqm: number;        // exact area of this floor polygon
+export interface Envelope {
+  buildingClass: BuildingClass;
+  classLabel: string;
   setbacks: EdgeSetback[];
-  skyPlaneClips: SkyPlaneClip[];
+  /** Layer 2: buildable ground footprint after mandatory setbacks */
+  buildablePolygon: Polygon;
+  buildableAreaSqm: number;
+  /** Area of setback-clipped pieces that were too small/disconnected and discarded */
+  discardedAreaSqm: number;
+  skyPlanes: SkyPlane[];
+  /** Max roof-deck height for the class (null = no height limit other than FAR / sky plane) */
+  maxHeightM: number | null;
+  heightRule: string;
+  maxGFA: number;
+  gfaRule: string;
 }
 
-/** Compliance check result */
+// ── Floors ──
+export interface FloorResult {
+  index: number;
+  elevationM: number;
+  heightM: number;
+  topM: number;
+  use: UseCategory;
+  /** Layer 3: allowable floor polygon (buildable ∩ sky-exposure planes at this floor's top) */
+  allowablePolygon: Polygon;
+  allowableAreaSqm: number;
+  /** Layer 4: actual designed floor polygon (⊆ allowable) */
+  polygon: Polygon;
+  areaSqm: number;
+  /** Floor trimmed to land exactly on the FAR / size cap */
+  isPartial: boolean;
+  /** Which sky planes reduced this floor (edge indices) */
+  skyPlaneEdges: number[];
+}
+
+// ── Compliance ──
+export type CheckStatus = 'PASS' | 'FAIL' | 'UNVERIFIED' | 'INFO' | 'N/A';
+
+export type GeometryKey =
+  | 'plot'
+  | 'road-setback'
+  | 'side-setback'
+  | 'rear-setback'
+  | 'sky-plane'
+  | 'height'
+  | 'open-space'
+  | 'envelope'
+  | 'floors'
+  | 'frontage';
+
 export interface ComplianceCheck {
-  rule: string;
+  id: string;
+  group: 'Zoning' | 'Open space' | 'Setbacks' | 'Height & form' | 'Access' | 'Classification' | 'Integrity';
   label: string;
-  actual: number | string;
-  allowed: number | string;
-  unit: string;
-  pass: boolean;
-  statutoryRef: string;
+  actual: string;
+  required: string;
+  status: CheckStatus;
+  reference: string;
+  sourceId?: string;
+  explanation: string;
+  geometry?: GeometryKey;
+  /** Edge indices the check relates to (for 3D highlighting) */
+  edges?: number[];
 }
 
-/** Full evaluation result */
-export interface EvaluationResult {
-  // Plot metrics
-  plotAreaSqm: number;
-  plotAreaRaiNganWah: string;
-  frontageM: number;
+export interface OpenSpaceRequirement {
+  id: 'zoning-osr' | 'mr55-33' | 'mr33-6';
+  label: string;
+  basis: string;
+  requiredSqm: number;
+  applies: boolean;
+}
 
-  // Building envelope
-  maxAllowedHeightM: number;
-  maxAllowedFloors: number;
-  maxAllowedGFA: number;
+export interface EiaAssessment {
+  status: 'required' | 'likely-not-required' | 'check';
+  reason: string;
+  estimatedUnits: number;
+  usableAreaProxySqm: number;
+}
 
-  // Actual design metrics
+export type DesignVariant = 'max-yield' | 'open-space';
+
+export interface DesignResult {
+  variant: DesignVariant;
+  label: string;
+  objective: string;
+  description: string;
+  envelope: Envelope;
+  floors: FloorResult[];
   totalGFA: number;
-  actualFAR: number;
-  groundCoveragePercent: number;
-  openSpaceSqm: number;
-  openSpacePercent: number;
+  residentialGFA: number;
+  commercialGFA: number;
+  far: number;
   heightM: number;
   floorCount: number;
-  estimatedUnits: number;
-
-  // Floor-by-floor results
-  floors: FloorResult[];
-
-  // Compliance
-  checks: ComplianceCheck[];
-
-  // Flags
+  largestFloorSqm: number;
+  footprintSqm: number;
+  groundCoveragePct: number;
+  openSpaceSqm: number;
+  openSpacePct: number;
+  /** Ground projection of the building (open space = plot − footprint) */
+  footprintPolygon: Polygon;
+  /** Extra uniform inset applied to the buildable area to meet open-space rules or the design objective */
+  footprintInsetM: number;
+  openSpaceRequirements: OpenSpaceRequirement[];
+  requiredOpenSpaceSqm: number;
+  permeableRequiredSqm: number;
   isHighRise: boolean;
   isExtraLarge: boolean;
-  eiaRequired: boolean;
-  eiaReason?: string;
-  roadBlocker?: string;
-  btsFlag?: boolean;
-  zoneCheck?: {
-    inZone: boolean;
-    outsideCount: number;
-    message: string;
-  };
-
-  // Road info
-  maxRoadWidth: number;
-  maxFrontageLength: number;
-  highRiseEligible: boolean;
+  eia: EiaAssessment;
+  limitingConstraints: string[];
+  checks: ComplianceCheck[];
+  /** True when no check FAILs (UNVERIFIED items may remain) */
+  compliant: boolean;
+  failCount: number;
+  unverifiedCount: number;
 }
 
-/** Road right-of-way advisory */
+export interface JurisdictionResult {
+  status: 'UNVERIFIED' | 'FAIL';
+  insideBangkok: boolean;
+  message: string;
+}
+
+export interface RoadEligibility {
+  mr33Allowed: boolean;
+  /** Max total floor area allowed for an MR 33 building by road width (Clause 2) */
+  mr33MaxGFA: number;
+  qualifyingEdges: number[];
+  reason: string;
+}
+
+export interface FeasibilityResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  input: SiteInput;
+  anchor: LngLat;
+  plotPolygon: Polygon;
+  plotAreaSqm: number;
+  plotAreaThai: string;
+  edges: PlotEdge[];
+  jurisdiction: JurisdictionResult;
+  roadEligibility: RoadEligibility;
+  maxFARGFA: number;
+  designA: DesignResult | null;
+  designB: DesignResult | null;
+  computeMs: number;
+}
+
 export interface RoadAdvisory {
-  type: 'centerline_intersection' | 'corridor_proximity';
+  type: 'centerline_intersection' | 'corridor_overlap';
   roadName: string;
-  count: number;
+  roadClass: string;
+  estimatedHalfWidthM?: number;
   description: string;
-  legalReference: string;
-  cadastralDisclaimer: string;
 }
 
-/** Preset plot definition */
 export interface PresetPlot {
   id: string;
   label: string;
   description: string;
   polygon: LngLatPolygon;
-  roadEdges: number[];      // indices of road-facing edges
-  roadWidth: number;
+  roadEdges: RoadEdgeInput[];
   buildingType: BuildingType;
-}
-
-/** Full input state */
-export interface ZoningInput {
-  polygon: Polygon;          // in metric coords
-  edges: PlotEdge[];
-  buildingType: BuildingType;
-  roadWidths: Map<number, number>;  // edge index → road width
-  polygonLngLat?: LngLatPolygon;    // WGS84 coordinates for geographic zone verification
-}
-
-/** Design variant */
-export type DesignVariant = 'max-yield' | 'podium-tower' | 'sub-eia';
-
-/** Design result */
-export interface DesignResult {
-  variant: DesignVariant;
-  label: string;
-  description: string;
-  floors: FloorResult[];
-  totalGFA: number;
-  actualFAR: number;
-  heightM: number;
-  floorCount: number;
-  groundCoveragePercent: number;
-  openSpaceSqm: number;
-  openSpacePercent: number;
-  estimatedUnits: number;
-  checks: ComplianceCheck[];
-  eiaRequired: boolean;
-  eiaReason?: string;
-  limitingConstraint?: string;
-  zoneCheck?: {
-    inZone: boolean;
-    outsideCount: number;
-    message: string;
-  };
-}
-
-/** Thai area conversion */
-export interface ThaiArea {
-  rai: number;
-  ngan: number;
-  wah: number;
-  display: string;
 }
