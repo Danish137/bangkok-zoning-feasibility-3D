@@ -1,0 +1,25 @@
+# Manually triggered: re-ingest the reference data from the official / open sources.
+# GitHub-hosted runners can reach the BMA ArcGIS service, which geo-blocks many networks.
+# Outputs are uploaded as an artifact for review; nothing is committed automatically.
+name: Ingest reference data
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: BMA 2013 plan zones (validated against the Gazette area counts)
+        run: node scripts/ingest/bma-zoning.mjs
+      - name: Mass-transit stations (OpenStreetMap, ODbL)
+        run: node scripts/ingest/osm-stations.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reference-data
+          path: public/data/

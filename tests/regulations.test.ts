@@ -13,7 +13,7 @@ import { rect } from './helpers';
 function edgesOf(pts: [number, number][], roads: Record<number, number>): PlotEdge[] {
   return pts.map((p, i) => {
     const q = pts[(i + 1) % pts.length]!;
-    return { index: i, start: p, end: q, lengthM: Math.hypot(q[0] - p[0], q[1] - p[1]), kind: roads[i] !== undefined ? 'road' : 'side', roadWidthM: roads[i] };
+    return { index: i, start: p, end: q, lengthM: Math.hypot(q[0] - p[0], q[1] - p[1]), onHull: true, kind: roads[i] !== undefined ? 'road' : 'side', roadWidthM: roads[i] };
   });
 }
 

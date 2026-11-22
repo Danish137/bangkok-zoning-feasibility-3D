@@ -57,3 +57,36 @@ Severity: **Critical** = wrong legal answer or misleading compliance; **High** =
 - **Secrets:** the assignment access key and personal submission links appear in no commit and no tracked file. `full-brief.md`, `.env*`, `.dev.vars`, `.wrangler/` and agent tooling (`.agents/`) are git-ignored. `.agents/mcp_config.json` (no credential) was untracked.
 - **Pages Function:** bundled with `wrangler pages functions build` and exercised in local workerd (`wrangler pages dev dist`). POST returns the same results as the browser engine; OPTIONS returns 204; other methods now return 405 instead of falling through to the SPA.
 - **Dependency advisory (open):** `npm audit` reports GHSA-jrc7-96c5-q579 (critical, XSS in MapLibre `DOM.sanitize()`) for every `maplibre-gl` ≤ 6.4.0; the fix requires the v6 major version. This app passes no user-controlled HTML to MapLibre (no popups or `setHTML`; only the basemap's attribution strings), so exposure is low. Upgrading is recommended as a separate, tested change because it touches the custom-layer projection code. The vitest/tinypool advisories are dev-only and are not shipped.
+
+## Second audit: autonomous data, Bangkok ordinance, hard shapes (22 Nov 2026)
+
+### Answers to the audit questions
+
+| Question | Finding |
+|---|---|
+| Does the 2:1 plane measure from the building face to the opposite road boundary? | **Yes, correctly.** Each storey vertex is checked with H ≤ 2 × (d + w), where d is the vertex's distance inside the road edge (≥ the front setback) and w the road width. That is exactly the building-face-to-opposite-boundary distance, assuming the plot edge is the road boundary. Corners and multiple roads follow MR 55 Cl. 45/46 (wider road governs within 60 m). |
+| …but | **Bug:** a road edge inside a concave notch (not on the convex hull) was clipped with an infinite half-plane. The generator kept parts of the plot behind the road line that it should not have, and the checker failed them (U-shape test: −57 m clearance). Now the plane applies only *in front of* that edge (`frontOnly`, slab removal), the checker uses the same definition, and the app warns. |
+| Concave / acute polygons | Distance setbacks are exact (capsule buffers, tangent-circumscribed arcs). **New bug found:** when a footprint inset or a 2:1 clip split a U-shaped plot into two arms, the footprint could keep a different arm from the allowable polygon (110 m² overhang on a U-shape, Design B). Fixed: storeys are now footprint ∩ own allowable polygon ∩ storey below, which keeps them inside the envelope and nested by construction. All six hard shapes × three building types pass every invariant at **0.001 m²** (U-shape both ways, 15° wedge, sliver triangle, three roads, irregular 9-gon). |
+| Stricter-law precedence | Setbacks and open space took the maximum, but **the Bangkok ordinance was missing**, so Bangkok's own rules were not applied: 30 % of land as open space for every residential building (Cl. 52), the L/6 – L/8 front-space rule (Cl. 52(6)/53), 3 m from the 3rd storey (Cl. 54), parking (Cl. 83–88), and the ≥ 6 m access road for car parks (Cl. 90). All are now encoded; the strictest value governs and both references are shown. |
+| OpenStreetMap road-width trap | OSM centrelines say nothing about the legal reserve, and MR 33 Cl. 2 also requires the ≥ 10 m road to stay ≥ 10 m **until it meets another ≥ 10 m public road**. That continuity condition was **not implemented at all**. It is now an input (`accessMinWidthM`), estimated automatically from the street graph and overridable. Unknown continuity makes the check UNVERIFIED, never PASS. |
+
+### Findings
+
+| # | Sev. | Finding (evidence) | Fix |
+|---|---|---|---|
+| A1 | Critical | **The study presets were in the wrong zone.** All three "Yor.9 Sukhumvit / Thonglor" presets lie in **ย.10** on the BMA GIS layer. | Zone detection from the validated layer; presets moved to the ย.9 area at Thong Lo / Ekkamai, 144–526 m from its boundary. |
+| A2 | Critical | BMA 2544 Cl. 52: 30 % of land open space for all residential buildings was not applied to low-rise designs (overstated low-rise yield). | Added as its own requirement (`bco-52`). |
+| A3 | High | MR 33 Cl. 2 continuity not checked. | `accessMinWidthM` + route estimate; eligibility fails when the route narrows below 10 m. |
+| A4 | High | No parking. Bangkok requires 1 space / 120 m² for large buildings (or 1 per unit ≥ 60 m², whichever is more), and parking floors count in FAR. | Parking module; podium or basement allocation; Cl. 90 cap on roads < 6 m; FAR-capped when floor plates are too narrow for ramps. |
+| A5 | High | L/6 – L/8 rule (Cl. 52(6)/53) not checked; deep narrow plots produced non-compliant towers. | Check + generator limits building depth. |
+| A6 | High | Notch-road 2:1 bug; arm-switch overhang bug (see above). | Fixed. |
+| A7 | Medium | Zone status was always UNVERIFIED (no data). | PASS / UNVERIFIED (< 10 m to a boundary) / FAIL from area overlap with the BMA layer. |
+| A8 | Medium | Station proximity was user-declared. | 225 OSM stations; whole-plot-within-500 m test. |
+| A9 | Medium | Road widths were manual only. | Automatic frontage detection and width estimate (centreline offset, facade clearance, class range), labelled EST., overridable; dependent checks flagged "EST. INPUT". |
+| A10 | Medium | Engine latency 150–275 ms on irregular plots. | Measured: **13–30 ms** median (warm), 15–18 ms cold. Done by pruning classes with upper bounds, area-targeted secant searches, cached envelopes and footprints, and fast exact containment tests. |
+
+### Claims in the request that were checked and not adopted
+
+- **"Transit FAR bonus (Cl. 52–56)":** the 2013 plan has no automatic transit FAR bonus for ย.9. Cl. 52–56 cover affordable housing, public open space, park-and-ride at listed stations, rainwater retention and green buildings. The 500 m station distance only changes *use* permissions.
+- **"High: Cadastral / Corridor verified" confidence:** without cadastral data no map-derived width can be called verified. Map values are always "EST."; only user-entered (surveyed) values remove the flag.
+- **Draft 4th revision overlay / "post-2027" design:** no GIS layer of the draft is published (only PDF maps), and the press-reported ย.9 values are unverified. Not implemented.

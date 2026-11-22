@@ -5,7 +5,7 @@ import type { ComplianceCheck } from '../engine/types';
 import { SOURCES } from '../engine/regulations';
 import { Callout, StatusPill } from './ui';
 
-const GROUP_ORDER: ComplianceCheck['group'][] = ['Zoning', 'Open space', 'Setbacks', 'Height & form', 'Access', 'Classification', 'Integrity'];
+const GROUP_ORDER: ComplianceCheck['group'][] = ['Zoning', 'Open space', 'Setbacks', 'Height & form', 'Access', 'Parking', 'Classification', 'Integrity'];
 
 export function ComplianceChecklist() {
   const s = useAppState();
@@ -36,6 +36,7 @@ export function ComplianceChecklist() {
           <span>{counts.PASS} pass</span><span>· {counts.FAIL} fail</span><span>· {counts.UNVERIFIED} unverified</span><span>· {counts.INFO} info</span><span>· {counts['N/A']} n/a</span>
         </div>
         {counts.UNVERIFIED > 0 && <div className="mt-1 text-[10px] leading-snug text-amber-200/90">UNVERIFIED means the tool lacks the data to decide. It is not a pass. Resolve these items with official documents before relying on the result.</div>}
+        {design.checks.some((c) => c.inputConfidence) && <div className="mt-1 text-[10px] leading-snug text-sky-200/90">{design.checks.filter((c) => c.inputConfidence).length} checks use road widths estimated from the map (EST. INPUT). Their PASS/FAIL holds for those widths; confirm the road reserve with a survey.</div>}
       </div>
 
       <div className="text-[10.5px] text-slate-400">Hover a rule to highlight its geometry in 3D; click to pin it and see the details.</div>
@@ -71,7 +72,10 @@ function CheckRow({ c, pinned }: { c: ComplianceCheck; pinned: boolean }) {
       <button className="flex w-full items-start gap-2 text-left" onClick={() => { setOpen(!open); dispatch({ type: 'FOCUS_CHECK', id: c.id }); }}>
         <StatusPill status={c.status} />
         <div className="min-w-0 flex-1">
-          <div className="text-[11.5px] font-medium leading-tight text-slate-100">{c.label}</div>
+          <div className="text-[11.5px] font-medium leading-tight text-slate-100">
+            {c.label}
+            {c.inputConfidence === 'estimated' && <span title="Depends on road widths estimated from the map, not surveyed values" data-testid={`est-${c.id}`} className="ml-1.5 rounded border border-sky-500/40 bg-sky-500/10 px-1 align-middle text-[8.5px] font-semibold text-sky-300">EST. INPUT</span>}
+          </div>
           <div className="mt-0.5 grid grid-cols-[auto_1fr] gap-x-2 text-[10.5px] leading-snug">
             <span className="text-slate-500">Actual</span><span className="tabular-nums text-slate-200">{c.actual}</span>
             <span className="text-slate-500">Required</span><span className="tabular-nums text-slate-300">{c.required}</span>

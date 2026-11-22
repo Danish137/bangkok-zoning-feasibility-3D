@@ -106,3 +106,4 @@
 .draw-overlay .ov-drag { fill: rgba(99, 102, 241, 0.15); stroke: #a5b4fc; stroke-width: 2; stroke-dasharray: 6 4; }
 .draw-overlay .ov-drag.ov-invalid { fill: rgba(244, 63, 94, 0.18); stroke: #fb7185; }
 .draw-overlay .ov-active { fill: #facc15; stroke: #fff; stroke-width: 2.5; }
+.edge-label--est { border-style: dashed; }

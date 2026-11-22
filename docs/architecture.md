@@ -12,8 +12,14 @@ src/engine/            pure, deterministic, DOM-free; shared by browser, worker 
                        MR 33 road eligibility, use caps (Plan Cl. 16), envelope, floor stacking
   designs.ts           Design A (max yield) and Design B (open space optimised)
   compliance.ts        per-design checklist measured from geometry; open-space rules; EIA
-  zoning.ts            jurisdiction (never auto-"verified")
-  feasibility.ts       runFeasibility(SiteInput): the one entry point
+  zoning.ts            zone detection: plot-area overlay on the BMA 2013 plan layer (PASS / UNVERIFIED / FAIL)
+  transit.ts           distance to mass-transit stations (Plan Cl. 16 500 m conditions)
+  parking.ts           BMA 2544 Cl. 83–86 / MR 7 parking demand and podium allocation
+  feasibility.ts       runFeasibility(SiteInput, SiteData?): the one entry point
+src/site/roadAnalysis.ts  road frontage, width and access-route estimates from vector-tile geometry
+src/siteData.ts        loads public/data/*.geojson once (worker + map overlays)
+public/data/           bkk-zoning-2556.geojson (BMA GIS), bkk-rail-stations.geojson (OSM)
+scripts/ingest/        reproducible ingestion of both datasets (+ .github/workflows/ingest-data.yml)
 src/engine.worker.ts   runs runFeasibility off the main thread
 src/hooks/useEngine.ts posts inputs to the worker (latest wins; sync fallback)
 src/state.tsx          reducer: plot, per-edge roads, drawing state machine, view state

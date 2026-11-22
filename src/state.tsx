@@ -1,14 +1,16 @@
 // ─── App state & reducer ───
 import React, { createContext, useContext, useReducer, type Dispatch } from 'react';
 import type {
-  BuildingType, FeasibilityResult, LngLat, LngLatPolygon, RoadAdvisory, RoadEdgeInput,
+  BuildingType, FeasibilityResult, LngLat, LngLatPolygon, ParkingMode, RoadAdvisory, RoadEdgeInput,
 } from './engine/types';
+import type { RoadAnalysis } from './site/roadAnalysis';
+import { DEFAULT_AVG_UNIT_SIZE_SQM } from './engine/regulations';
 import { PRESET_PLOTS } from './engine/presets';
 import { isSelfIntersecting, normalizePolygonWinding, pathSegmentCrosses } from './engine/polygon';
 import { runFeasibility } from './engine/feasibility';
 
 export type Stage = 'site' | 'building' | 'floor' | 'compliance' | 'report';
-export type GuideKey = 'buildable' | 'envelope' | 'skyPlane' | 'openSpace' | 'threshold23' | 'roads';
+export type GuideKey = 'buildable' | 'envelope' | 'skyPlane' | 'openSpace' | 'threshold23' | 'roads' | 'zoning' | 'transit';
 
 export interface DrawingState {
   active: boolean;
@@ -24,7 +26,13 @@ export interface AppState {
   roadEdges: RoadEdgeInput[];
   buildingType: BuildingType;
   nearTransitDeclared: boolean;
+  avgUnitSizeSqm: number;
+  parkingMode: ParkingMode;
   activePresetId: string | null;
+  /** Map-geometry road analysis for the current polygon (key = polygon JSON) */
+  roadAnalysis: { key: string; analysis: RoadAnalysis } | null;
+  /** Mark detected road frontages automatically when the next analysis arrives (new drawn plot) */
+  autoRoadsPending: boolean;
   /** Plot before the current drawing session (restored on cancel) */
   previousPlot: { polygon: LngLatPolygon; roadEdges: RoadEdgeInput[]; presetId: string | null } | null;
   plotMessage: string | null;
@@ -50,9 +58,11 @@ function normalizePreset(polygon: LngLatPolygon, roadEdges: RoadEdgeInput[]) {
   const norm = normalizePolygonWinding(polygon, roadEdges.map((r) => r.edgeIndex));
   return {
     polygon: norm.vertices,
-    roadEdges: roadEdges.map((r) => ({ edgeIndex: norm.remap(r.edgeIndex), widthM: r.widthM })),
+    roadEdges: roadEdges.map((r) => ({ ...r, edgeIndex: norm.remap(r.edgeIndex) })),
   };
 }
+
+export const polygonKey = (p: LngLatPolygon) => JSON.stringify(p);
 
 const initialPlot = normalizePreset(defaultPreset.polygon, defaultPreset.roadEdges);
 
@@ -71,13 +81,17 @@ export const initialState: AppState = {
   roadEdges: initialPlot.roadEdges,
   buildingType: defaultPreset.buildingType,
   nearTransitDeclared: false,
+  avgUnitSizeSqm: DEFAULT_AVG_UNIT_SIZE_SQM,
+  parkingMode: 'podium',
   activePresetId: defaultPreset.id,
+  roadAnalysis: null,
+  autoRoadsPending: false,
   previousPlot: null,
   plotMessage: null,
   activeDesign: 'a',
   selectedFloor: null,
   sectionCutaway: false,
-  guides: { buildable: true, envelope: false, skyPlane: true, openSpace: true, threshold23: false, roads: true },
+  guides: { buildable: true, envelope: false, skyPlane: true, openSpace: true, threshold23: false, roads: true, zoning: true, transit: true },
   hoveredCheck: null,
   focusedCheck: null,
   focusedEdge: null,
@@ -101,6 +115,11 @@ export type AppAction =
   | { type: 'SET_ROAD_WIDTH'; edgeIndex: number; widthM: number }
   | { type: 'SET_BUILDING_TYPE'; buildingType: BuildingType }
   | { type: 'SET_TRANSIT'; value: boolean }
+  | { type: 'SET_AVG_UNIT'; sqm: number }
+  | { type: 'SET_PARKING_MODE'; mode: ParkingMode }
+  | { type: 'SET_ROAD_ANALYSIS'; key: string; analysis: RoadAnalysis; final?: boolean }
+  | { type: 'SET_ACCESS_WIDTH'; edgeIndex: number; widthM: number | undefined }
+  | { type: 'USE_ROAD_ESTIMATE'; edgeIndex: number }
   | { type: 'SET_ACTIVE_DESIGN'; design: 'a' | 'b' }
   | { type: 'SET_SELECTED_FLOOR'; floor: number | null }
   | { type: 'TOGGLE_GUIDE'; guide: GuideKey }
@@ -167,7 +186,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         roadEdges: [],
         activePresetId: null,
         previousPlot: null,
-        plotMessage: 'Plot created. Now click the edge(s) that face a public road and set each road width.',
+        roadAnalysis: null,
+        autoRoadsPending: true,
+        plotMessage: 'Plot created. Road frontages are detected from the map automatically; check them and replace the estimated widths with surveyed ones when available.',
         cameraCommand: { kind: 'reset', n: (state.cameraCommand?.n ?? 0) + 1 },
       };
     }
@@ -196,6 +217,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         activePresetId: null,
         previousPlot: null,
         plotMessage: null,
+        roadAnalysis: null,
+        autoRoadsPending: false,
         result: null,
         roadAdvisory: [],
       };
@@ -213,6 +236,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         buildingType: p.buildingType,
         activePresetId: p.id,
         previousPlot: null,
+        roadAnalysis: null,
+        autoRoadsPending: false,
         plotMessage: null,
         roadAdvisory: [],
         cameraCommand: { kind: 'reset', n: (state.cameraCommand?.n ?? 0) + 1 },
@@ -229,7 +254,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         polygon: norm.vertices,
-        roadEdges: state.roadEdges.map((r) => ({ edgeIndex: norm.remap(r.edgeIndex), widthM: r.widthM })),
+        roadEdges: state.roadEdges.map((r) => ({ ...r, edgeIndex: norm.remap(r.edgeIndex) })),
         activePresetId: null,
         plotMessage: norm.wasReversed ? 'The plot was flipped; road edges were remapped to the same physical boundaries.' : null,
       };
@@ -239,11 +264,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (action.edgeIndex < 0 || action.edgeIndex >= state.polygon.length) return state;
       const exists = state.roadEdges.some((r) => r.edgeIndex === action.edgeIndex);
       const lastWidth = state.roadEdges[state.roadEdges.length - 1]?.widthM ?? DEFAULT_ROAD_WIDTH;
+      const est = state.roadAnalysis?.key === polygonKey(state.polygon) ? estimateFor(state.roadAnalysis.analysis, action.edgeIndex) : null;
       return {
         ...state,
         roadEdges: exists
           ? state.roadEdges.filter((r) => r.edgeIndex !== action.edgeIndex)
-          : [...state.roadEdges, { edgeIndex: action.edgeIndex, widthM: lastWidth }].sort((a, b) => a.edgeIndex - b.edgeIndex),
+          : [...state.roadEdges, est ?? { edgeIndex: action.edgeIndex, widthM: lastWidth, source: 'user' as const }].sort((a, b) => a.edgeIndex - b.edgeIndex),
         activePresetId: null,
         plotMessage: null,
       };
@@ -252,9 +278,56 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'SET_ROAD_WIDTH':
       return {
         ...state,
-        roadEdges: state.roadEdges.map((r) => (r.edgeIndex === action.edgeIndex ? { ...r, widthM: action.widthM } : r)),
+        roadEdges: state.roadEdges.map((r) => (r.edgeIndex === action.edgeIndex ? { ...r, widthM: action.widthM, source: 'user' as const } : r)),
         activePresetId: null,
       };
+
+    case 'SET_ACCESS_WIDTH':
+      return {
+        ...state,
+        roadEdges: state.roadEdges.map((r) => (r.edgeIndex === action.edgeIndex
+          ? (action.widthM === undefined ? { ...r, accessMinWidthM: undefined, accessSource: undefined } : { ...r, accessMinWidthM: action.widthM, accessSource: 'user' as const })
+          : r)),
+        activePresetId: null,
+      };
+
+    case 'USE_ROAD_ESTIMATE': {
+      const est = state.roadAnalysis?.key === polygonKey(state.polygon) ? estimateFor(state.roadAnalysis.analysis, action.edgeIndex) : null;
+      if (!est) return state;
+      return { ...state, roadEdges: state.roadEdges.map((r) => (r.edgeIndex === action.edgeIndex ? est : r)) };
+    }
+
+    case 'SET_ROAD_ANALYSIS': {
+      if (action.key !== polygonKey(state.polygon)) return state; // stale
+      const a = action.analysis;
+      let roadEdges = state.roadEdges.map((r) => {
+        const est = estimateFor(a, r.edgeIndex);
+        if (!est) return r;
+        return {
+          ...r,
+          ...(r.source === 'map-estimate' ? { widthM: est.widthM } : {}),
+          ...(r.accessSource !== 'user' && est.accessMinWidthM !== undefined ? { accessMinWidthM: est.accessMinWidthM, accessSource: 'map-estimate' as const } : {}),
+        };
+      });
+      let plotMessage = state.plotMessage;
+      const found = a.edges.some((e) => e.facesRoad);
+      if (state.autoRoadsPending && !found && action.final === false) {
+        return { ...state, roadAnalysis: { key: action.key, analysis: a }, roadEdges }; // wait for the retry
+      }
+      if (state.autoRoadsPending && roadEdges.length === 0) {
+        roadEdges = a.edges.filter((e) => e.facesRoad).map((e) => estimateFor(a, e.edgeIndex)!).filter(Boolean);
+        plotMessage = roadEdges.length
+          ? `Detected ${roadEdges.length} road frontage${roadEdges.length > 1 ? 's' : ''} from the map (${roadEdges.map((r) => `E${r.edgeIndex + 1} ≈ ${r.widthM} m`).join(', ')}). These are estimates: check them and enter surveyed widths when available.`
+          : 'No road frontage was detected from the map. Click the edge(s) that face a public road.';
+      }
+      return { ...state, roadAnalysis: { key: action.key, analysis: a }, roadEdges, autoRoadsPending: false, plotMessage };
+    }
+
+    case 'SET_AVG_UNIT':
+      return { ...state, avgUnitSizeSqm: action.sqm };
+
+    case 'SET_PARKING_MODE':
+      return { ...state, parkingMode: action.mode };
 
     case 'SET_BUILDING_TYPE':
       return { ...state, buildingType: action.buildingType, selectedFloor: null };
@@ -331,4 +404,15 @@ export function useAppDispatch() {
 export function useActiveDesign() {
   const s = useAppState();
   return s.activeDesign === 'b' ? s.result?.designB ?? null : s.result?.designA ?? null;
+}
+
+/** Road input built from the map analysis for one edge (estimated width + access-route width) */
+export function estimateFor(a: RoadAnalysis, edgeIndex: number): RoadEdgeInput | null {
+  const e = a.edges.find((x) => x.edgeIndex === edgeIndex);
+  if (!e?.facesRoad || e.estimatedWidthM === undefined) return null;
+  const acc = a.access.find((x) => x.fromEdge === edgeIndex);
+  return {
+    edgeIndex, widthM: e.estimatedWidthM, source: 'map-estimate',
+    ...(acc ? { accessMinWidthM: acc.minWidthM, accessSource: 'map-estimate' as const } : {}),
+  };
 }

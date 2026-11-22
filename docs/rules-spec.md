@@ -45,4 +45,23 @@ The required open space is the largest of:
 - Mixed-use ≥ 23 m or ≥ 10,000 m²: "check" (retail item 27.2).
 
 ## Tolerances
-Area 0.01 m², distance 1 mm. Full precision internally; rounding only for display.
+Area 0.001 m², distance 1 mm. Full precision internally; rounding only for display.
+
+## Bangkok Building Control Ordinance B.E. 2544 (added in the second audit)
+- **Open space (Cl. 52(1)–(2)):** ≥ 30 % of the land area (residential, incl. mixed use with housing), or 10 % (other uses), for every building. Evaluated with the other three open-space rules; the largest governs.
+- **Front space (Cl. 52(6) / 53), for buildings > 2 storeys or > 8 m, or commercial:** the building's face on the road must be longer than 1/8 of its perimeter and within 20 m of the road (Cl. 53). Otherwise it needs open space ≥ 6 m wide in front (≥ 12 m above 3 storeys) along ≥ 1/6 of the perimeter. If Cl. 53 fails, the generator cuts the footprint depth from the main road.
+- **Openings (Cl. 54):** 3 m from private land from the 3rd storey. Applied to the ≤ 9 m class as an upper buildable polygon from storey index 2.
+- **Around the building (Cl. 55)** and **corner splay (Cl. 51):** checks.
+- **Parking (Cl. 83–86, MR 7 Cl. 3(1)):**
+  - spaces = max(by use, large-building rate), each rounded up;
+  - by use: 1 per unit when the average unit is ≥ 60 m²; office or retail ≥ 300 m²: 1 per 60 m²;
+  - large building (> 2,000 m², or ≥ 15 m and > 1,000 m²): 1 per 120 m² of all floor area, parking included (solved to a fixed point);
+  - capacity is 28 m² per space on plates ≥ 16 m wide, 36 m² on plates 11–16 m, none below 11 m.
+  - Podium: the lowest non-retail storeys become parking. Basement: levels under the ground storey, counted in FAR.
+- **Car access (Cl. 90):** with ≥ 15 spaces, the road (and its access route) must be ≥ 6 m. Otherwise the generator caps the floor area so the requirement stays below 15 spaces.
+
+## Road continuity (MR 33 Cl. 2)
+`accessMinWidthM` per road edge is the narrowest reserve on the route to another ≥ 10 m public road. If it is < 10 m (< 18 m above 30,000 m²), MR 33 classes are refused. If it is unknown, they are allowed, but the road-width check is UNVERIFIED.
+
+## 2:1 plane on notch roads
+For a road edge not on the plot's convex hull, the plane governs only points in front of the road line: the slab 0 ≤ d < H/2 − w is removed, and points behind the line are exempt.

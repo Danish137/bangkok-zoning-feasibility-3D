@@ -8,4 +8,6 @@ export * from './compliance';
 export * from './designs';
 export * from './zoning';
 export * from './feasibility';
+export * from './transit';
+export * from './parking';
 export * from './presets';

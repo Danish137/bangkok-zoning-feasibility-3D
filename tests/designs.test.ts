@@ -148,11 +148,13 @@ describe('regulatory scenarios', () => {
     expect(A.limitingConstraints.join(' ')).toMatch(/Height < 23 m/);
   });
 
-  it('narrow 4 m soi: 4 m road setback and 2:1 plane trim upper floors', () => {
+  it('narrow 4 m soi: 4 m road setback; BMA Cl. 90 keeps the car park under 15 spaces (floor area capped)', () => {
     const r = run(rect(40, 60), [{ edgeIndex: 0, widthM: 4 }], 'low-rise-condo');
     const [A] = both(r);
     expect(A.envelope.setbacks[0]!.distanceM).toBe(4);
-    expect(A.floors.some((f) => f.skyPlaneEdges.includes(0))).toBe(true);
+    expect(A.parking.requiredSpaces).toBeLessThan(15);
+    expect(A.totalGFA).toBeLessThanOrEqual(2000); // stays below the 2,000 m² large-building threshold
+    expect(A.limitingConstraints.join(' ')).toMatch(/Cl\. 90/);
   });
 
   it('changing road width changes setbacks, planes and results without other input changes', () => {

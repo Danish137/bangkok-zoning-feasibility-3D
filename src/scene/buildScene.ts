@@ -33,6 +33,7 @@ export const COLORS = {
   open: 0x10b981,
   threshold: 0xef4444,
   focus: 0xf43f5e,
+  parking: 0x64748b,
 };
 
 function shapeFrom(poly: Polygon, holes: Polygon[] = []): THREE.Shape {
@@ -227,6 +228,37 @@ export function buildScene(result: FeasibilityResult, o: SceneOptions): BuiltSce
     }
   }
 
+  // ── BMA 2544 Cl. 52(6)/53 front-space highlight: 20 m band in front of each road edge ──
+  if (design && fg === 'front-space') {
+    for (const e of result.edges) {
+      if (e.kind !== 'road') continue;
+      const inN = edgeInwardNormal(e.start, e.end);
+      const band = (d: number): Polygon => [e.start, e.end, [e.end[0] + inN[0] * d, e.end[1] + inN[1] * d], [e.start[0] + inN[0] * d, e.start[1] + inN[1] * d]];
+      const b20 = intersectPolygons(band(20), plot).polygon;
+      if (b20.length >= 3) group.add(flat(b20, 0.42, COLORS.focus, 0.18));
+      const w = design.frontSpace.requiredWidthM;
+      const bw = intersectPolygons(band(w), plot).polygon;
+      if (bw.length >= 3) group.add(lineLoop(bw, 0.45, COLORS.focus, { dashed: true }));
+    }
+    if (design.footprintPolygon.length >= 3) group.add(lineLoop(design.footprintPolygon, 0.5, COLORS.selected));
+  }
+
+  // ── Basement parking (below ground, translucent) ──
+  if (design && design.basementFloors.length && (o.floorMode || fg === 'parking' || fg === 'floors')) {
+    for (const f of design.basementFloors) {
+      const geo = new THREE.ExtrudeGeometry(shapeFrom(f.polygon), { depth: f.heightM * 0.9, bevelEnabled: false });
+      const isSel = o.selectedFloor === f.index;
+      const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: isSel ? COLORS.selected : COLORS.parking, transparent: true, opacity: isSel ? 0.9 : 0.45, side: THREE.DoubleSide, depthWrite: false }));
+      m.position.z = f.elevationM;
+      m.userData = { floorIndex: f.index };
+      group.add(m);
+      pickables.push(m);
+      const l = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: 0xcbd5e1, transparent: true, opacity: 0.5 }));
+      l.position.z = f.elevationM;
+      group.add(l);
+    }
+  }
+
   // ── Layer 4: actual building floors ──
   if (design) {
     const base = o.variant === 'b' ? COLORS.designB : COLORS.designA;
@@ -235,8 +267,9 @@ export function buildScene(result: FeasibilityResult, o: SceneOptions): BuiltSce
       if (f.polygon.length < 3) continue;
       const isSel = o.selectedFloor === f.index;
       if (o.sectionCutaway && o.selectedFloor !== null && f.index > o.selectedFloor) continue;
-      const ghost = (o.floorMode && o.selectedFloor !== null && !isSel) || (fg && !floorsFocus && fg !== 'height');
-      const color = isSel ? COLORS.selected : f.use === 'commercial' ? COLORS.commercial : base;
+      const parkingFocus = fg === 'parking';
+      const ghost = (o.floorMode && o.selectedFloor !== null && !isSel) || (fg && !floorsFocus && fg !== 'height' && !(parkingFocus && f.use === 'parking'));
+      const color = isSel ? COLORS.selected : parkingFocus && f.use === 'parking' ? COLORS.focus : f.use === 'parking' ? COLORS.parking : f.use === 'commercial' ? COLORS.commercial : base;
       const geo = new THREE.ExtrudeGeometry(shapeFrom(f.polygon), { depth: f.heightM * 0.9, bevelEnabled: false });
       const mat = new THREE.MeshLambertMaterial({
         color, transparent: true, opacity: isSel ? 0.98 : ghost ? 0.22 : 0.9, side: THREE.DoubleSide, depthWrite: !ghost,

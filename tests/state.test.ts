@@ -42,7 +42,8 @@ describe('drawing workflow', () => {
     expect(s.polygon).toHaveLength(4);
     expect(signedArea(s.polygon)).toBeGreaterThan(0);
     expect(s.roadEdges).toEqual([]);
-    expect(s.plotMessage).toMatch(/road/);
+    expect(s.autoRoadsPending).toBe(true); // frontages are detected from the map on the next analysis
+    expect(s.plotMessage).toMatch(/road/i);
   });
   it('clear plot removes everything; new plot can be drawn elsewhere', () => {
     let s = reduce(initialState, { type: 'CLEAR_PLOT' });
@@ -65,9 +66,9 @@ describe('editing a committed plot', () => {
   it('road edges carry their own widths (corner plot 18 m + 12 m)', () => {
     const s = reduce(square, { type: 'TOGGLE_ROAD_EDGE', edgeIndex: 0 }, { type: 'SET_ROAD_WIDTH', edgeIndex: 0, widthM: 18 },
       { type: 'TOGGLE_ROAD_EDGE', edgeIndex: 1 }, { type: 'SET_ROAD_WIDTH', edgeIndex: 1, widthM: 12 });
-    expect(s.roadEdges).toEqual([{ edgeIndex: 0, widthM: 18 }, { edgeIndex: 1, widthM: 12 }]);
+    expect(s.roadEdges).toEqual([{ edgeIndex: 0, widthM: 18, source: 'user' }, { edgeIndex: 1, widthM: 12, source: 'user' }]);
     const off = appReducer(s, { type: 'TOGGLE_ROAD_EDGE', edgeIndex: 0 });
-    expect(off.roadEdges).toEqual([{ edgeIndex: 1, widthM: 12 }]);
+    expect(off.roadEdges).toEqual([{ edgeIndex: 1, widthM: 12, source: 'user' }]);
   });
   it('a vertex move that would self-intersect is rejected', () => {
     const s = appReducer(square, { type: 'MOVE_VERTEX', index: 1, coord: P(-10, 20) }); // new edge crosses edge 3
@@ -90,8 +91,9 @@ describe('editing a committed plot', () => {
     expect(e.widthM).toBe(16);
   });
   it('preset selection loads per-edge widths', () => {
-    const s = appReducer(initialState, { type: 'SET_PRESET', presetId: 'corner-18m-12m' });
-    expect(s.roadEdges.map((r) => r.widthM).sort()).toEqual([12, 18]);
+    const s = appReducer(initialState, { type: 'SET_PRESET', presetId: 'ekkamai-corner' });
+    expect(s.roadEdges.map((r) => r.widthM).sort((a, b) => a - b)).toEqual([7, 20]);
+    expect(s.roadEdges.every((r) => r.source === 'map-estimate')).toBe(true);
   });
   it('switching designs resets floor selection; result updates keep valid floor', () => {
     const s = reduce(initialState, { type: 'SET_SELECTED_FLOOR', floor: 2 }, { type: 'SET_ACTIVE_DESIGN', design: 'b' });

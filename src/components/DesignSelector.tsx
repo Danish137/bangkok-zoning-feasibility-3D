@@ -28,6 +28,9 @@ export function DesignCard({ d, active, onSelect, testId }: { d: DesignResult; a
         <Metric label="Footprint" value={`${fmtNum(d.footprintSqm)} m²`} sub={`${d.groundCoveragePct.toFixed(0)} % cover`} />
         <Metric label="Open space" value={`${fmtNum(d.openSpaceSqm)} m²`} sub={`${d.openSpacePct.toFixed(0)} % of plot`} tone="good" />
         <Metric label="Class" value={d.isHighRise || d.isExtraLarge ? 'MR 33' : 'Low-rise'} sub={d.isHighRise ? 'high-rise' : d.isExtraLarge ? 'extra-large' : '< 23 m'} />
+        <Metric label="Residential" value={`${fmtNum(d.residentialGFA)} m²`} sub={d.residentialGFA > 0 ? `≈ ${d.parking.units} units` : undefined} />
+        <Metric label="Parking" value={`${d.parking.providedSpaces} / ${d.parking.requiredSpaces}`} sub={d.parking.mode === 'podium' ? `${d.parking.parkingStoreys} podium st.` : `${d.parking.basementLevels} basement`} tone={d.parking.providedSpaces >= d.parking.requiredSpaces ? undefined : 'bad'} />
+        <Metric label="Retail / office" value={`${fmtNum(d.commercialGFA)} m²`} />
       </div>
     </button>
   );
@@ -40,6 +43,8 @@ const LAYERS: { key: GuideKey; label: string; swatch: string; hint: string }[] =
   { key: 'openSpace', label: 'Open space (plot − footprint)', swatch: '#10b981', hint: 'Uncovered land counted for OSR / MR 55 / MR 33 open space' },
   { key: 'roads', label: 'Road corridors (entered widths)', swatch: '#64748b', hint: 'Road reserve of the entered width, centreline and opposite boundary' },
   { key: 'threshold23', label: '23 m high-rise threshold', swatch: '#ef4444', hint: 'MR 33 Cl. 1: buildings ≥ 23 m are high-rise' },
+  { key: 'zoning', label: 'Zones of the 2013 plan (ย.9 brown)', swatch: '#b45309', hint: 'BMA GIS layer of the Bangkok Comprehensive Plan B.E. 2556' },
+  { key: 'transit', label: 'Mass-transit stations + 500 m ring', swatch: '#0ea5e9', hint: 'OpenStreetMap stations; ring around the nearest station' },
 ];
 
 export function LayerToggles() {

@@ -15,5 +15,8 @@ Implemented and verified as of this audit. "Browser-verified" means exercised by
 | JSON report, API payload | Implemented | Browser download test |
 | Cloudflare Pages Function on the same engine | Implemented | `tests/api.test.ts` (function handler invoked in Node; not deployed) |
 | Idle performance (0 renders), memory (stable after GC), 58–60 fps orbit | Measured | Browser |
+| Zone detection from the BMA GIS layer; stations; automatic road frontage / width / access-route estimates | Implemented | `tests/bangkok.test.ts`, `tests/roadAnalysis.test.ts`, browser |
+| BMA 2544 (Cl. 49–55, 83–90) and parking (podium / basement) | Implemented | `tests/bangkok.test.ts` (hand-derived cases), browser |
+| Engine latency | 13–30 ms median (warm), 15–18 ms cold | measured in Node; 60 ms input→result in the browser |
 
 Not done: see "Known limitations" in `docs/audit-findings.md` and section 7 of `docs/regulatory-research.md`.

@@ -29,3 +29,28 @@ describe('/api/evaluate', () => {
     expect((await post({ polygon: bowtie, roadEdges: [], buildingType: 'low-rise-condo' })).status).toBe(422);
   });
 });
+
+describe('/api/evaluate with the bundled reference data (Pages ASSETS binding)', () => {
+  it('serves zone + station results identical to the browser engine', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { realData } = await import('./helpers');
+    const ASSETS = { fetch: async (req: Request | string) => {
+      const path = new URL(typeof req === 'string' ? req : req.url).pathname;
+      return new Response(readFileSync(`public${path}`, 'utf8'), { status: 200 });
+    } };
+    const p = PRESET_PLOTS[2]!;
+    const res = await onRequestPost({ request: new Request('https://example.pages.dev/api/evaluate', { method: 'POST', body: JSON.stringify({ polygon: p.polygon, roadEdges: p.roadEdges, buildingType: p.buildingType }) }), env: { ASSETS } });
+    expect(res.status).toBe(200);
+    const api = await res.json();
+    const local = runFeasibility({ polygonLngLat: p.polygon, roadEdges: p.roadEdges, buildingType: p.buildingType }, realData());
+    expect(api.jurisdiction.status).toBe('PASS');
+    expect(api.jurisdiction.zone).toBe('ย.9');
+    expect(api.transit.nearest.nameEn).toBe(local.transit.nearest!.nameEn);
+    expect(api.designA.totalGFA).toBe(local.designA!.totalGFA);
+    expect(api.designA.parking.requiredSpaces).toBe(local.designA!.parking.requiredSpaces);
+  });
+  it('accepts avgUnitSizeSqm and parkingMode', () => {
+    const { input } = parseBody({ polygon: PRESET_PLOTS[1]!.polygon, roadEdges: [{ edgeIndex: 0, widthM: 15, accessMinWidthM: 12 }], buildingType: 'high-rise-condo', avgUnitSizeSqm: 70, parkingMode: 'basement' });
+    expect(input).toMatchObject({ avgUnitSizeSqm: 70, parkingMode: 'basement', roadEdges: [{ edgeIndex: 0, widthM: 15, accessMinWidthM: 12, source: 'user', accessSource: 'user' }] });
+  });
+});

@@ -2,7 +2,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import * as THREE from 'three';
-import { useAppDispatch, useAppState, type AppState } from '../state';
+import { polygonKey, useAppDispatch, useAppState, type AppState } from '../state';
+import { analyzeRoads, type Footprint as BuildingFootprint, type RoadLine } from '../site/roadAnalysis';
+import { STATIONS_URL, ZONING_URL } from '../siteData';
 import type { LngLat, LngLatPolygon, RoadAdvisory } from '../engine/types';
 import { pointInPolygon, polygonArea, segmentsIntersect, signedArea } from '../engine/polygon';
 import { anchorAtCentroid, polygonToMetric } from '../engine/geo';
@@ -68,6 +70,7 @@ export function MapContainer() {
   const markersRef = useRef<maplibregl.Marker[]>([]);
   /** Last applied building filter / advisory, so idle events don't re-trigger work (avoids an idle → setFilter → idle loop) */
   const filterKeyRef = useRef<string>('');
+  const analysisRef = useRef<{ key: string; attempts: number; found: boolean }>({ key: '', attempts: 0, found: false });
   const advisoryKeyRef = useRef<string>('');
 
   // ─── 1. Map initialisation ───
@@ -145,7 +148,28 @@ export function MapContainer() {
     } catch (err) { console.debug('building layer', err); }
 
     const add = (id: string) => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: fc([]) }); };
-    ['plot', 'road-edges', 'edge-hit', 'vertices'].forEach(add);
+    ['plot', 'road-edges', 'edge-hit', 'vertices', 'transit-ring', 'access-route', 'access-bottleneck'].forEach(add);
+
+    // Reference overlays: 2013 plan zones (BMA GIS layer) and mass-transit stations (OpenStreetMap)
+    const firstSymbol = map.getStyle().layers?.find((l) => l.type === 'symbol')?.id;
+    const font = ['Noto Sans Regular'];
+    try {
+      if (!map.getSource('zoning')) map.addSource('zoning', { type: 'geojson', data: ZONING_URL, attribution: 'Zoning: BMA City Planning Dept. (2013 plan GIS layer)' });
+      const isY9: maplibregl.ExpressionSpecification = ['==', ['get', 'zone'], 'ย.9'];
+      map.addLayer({ id: 'zoning-fill', type: 'fill', source: 'zoning', paint: { 'fill-color': ['case', isY9, '#b45309', '#64748b'], 'fill-opacity': ['case', isY9, 0.14, 0.03] } }, firstSymbol);
+      map.addLayer({ id: 'zoning-line', type: 'line', source: 'zoning', paint: { 'line-color': ['case', isY9, '#d97706', '#94a3b8'], 'line-width': ['case', isY9, 1.6, 0.8], 'line-opacity': 0.7, 'line-dasharray': [3, 2] } }, firstSymbol);
+      map.addLayer({ id: 'zoning-label', type: 'symbol', source: 'zoning', minzoom: 13.5, layout: { 'text-field': ['get', 'zone'], 'text-font': font, 'text-size': 12 }, paint: { 'text-color': ['case', isY9, '#92400e', '#475569'], 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+    } catch (err) { console.debug('zoning overlay', err); }
+    try {
+      if (!map.getSource('stations')) map.addSource('stations', { type: 'geojson', data: STATIONS_URL, attribution: 'Stations © OpenStreetMap contributors (ODbL)' });
+      map.addLayer({ id: 'transit-ring-fill', type: 'fill', source: 'transit-ring', paint: { 'fill-color': '#0ea5e9', 'fill-opacity': 0.05 } });
+      map.addLayer({ id: 'transit-ring-line', type: 'line', source: 'transit-ring', paint: { 'line-color': '#0284c7', 'line-width': 1.5, 'line-dasharray': [2, 2] } });
+      map.addLayer({ id: 'stations-circle', type: 'circle', source: 'stations', paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 3, 17, 7], 'circle-color': '#0ea5e9', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
+      map.addLayer({ id: 'stations-label', type: 'symbol', source: 'stations', minzoom: 13, layout: { 'text-field': ['coalesce', ['get', 'nameEn'], ['get', 'name']], 'text-font': font, 'text-size': 11, 'text-offset': [0, 1.2], 'text-anchor': 'top' }, paint: { 'text-color': '#075985', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+    } catch (err) { console.debug('stations overlay', err); }
+    map.addLayer({ id: 'access-route', type: 'line', source: 'access-route', layout: { 'line-cap': 'round' }, paint: { 'line-color': '#f59e0b', 'line-width': 3, 'line-dasharray': [1.5, 1.5], 'line-opacity': 0.9 } });
+    map.addLayer({ id: 'access-bottleneck', type: 'circle', source: 'access-bottleneck', paint: { 'circle-radius': 6, 'circle-color': '#ef4444', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
+    map.addLayer({ id: 'access-bottleneck-label', type: 'symbol', source: 'access-bottleneck', layout: { 'text-field': ['get', 'label'], 'text-font': font, 'text-size': 11, 'text-offset': [0, -1.4], 'text-anchor': 'bottom' }, paint: { 'text-color': '#991b1b', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
     map.addLayer({ id: 'plot-fill', type: 'fill', source: 'plot', paint: { 'fill-color': '#6366f1', 'fill-opacity': 0.08 } });
     map.addLayer({ id: 'plot-line', type: 'line', source: 'plot', paint: { 'line-color': '#c7d2fe', 'line-width': 2 } });
@@ -274,8 +298,11 @@ export function MapContainer() {
       const road = state.roadEdges.find((r) => r.edgeIndex === i);
       const el = document.createElement('button');
       el.className = `edge-label ${road ? 'edge-label--road' : ''}`;
-      el.textContent = road ? `E${i + 1} · ${road.widthM} m road` : `E${i + 1}`;
-      el.title = road ? 'Road frontage. Click to unmark' : 'Click to mark this edge as road frontage';
+      el.textContent = road ? `E${i + 1} · ${road.widthM} m${road.source === 'map-estimate' ? ' est.' : ''}` : `E${i + 1}`;
+      el.title = road
+        ? `Road frontage${road.source === 'map-estimate' ? ' (width estimated from the map; enter the surveyed width in the panel)' : ''}. Click to unmark`
+        : 'Click to mark this edge as road frontage';
+      if (road?.source === 'map-estimate') el.classList.add('edge-label--est');
       el.setAttribute('data-testid', `edge-label-${i}`);
       el.addEventListener('click', (ev) => { ev.stopPropagation(); dispatch({ type: 'TOGGLE_ROAD_EDGE', edgeIndex: i }); });
       el.addEventListener('mouseenter', () => dispatch({ type: 'FOCUS_EDGE', edgeIndex: i }));
@@ -534,6 +561,68 @@ export function MapContainer() {
     } catch (err) { console.debug('building filter', err); }
   }
 
+  /** Estimate road widths / access route from the loaded vector tiles (once per polygon; retried while tiles load) */
+  function runRoadAnalysis(map: maplibregl.Map) {
+    const s = stateRef.current;
+    if (s.drawing.active || s.polygon.length < 3 || !map.getSource('openmaptiles')) return;
+    const key = polygonKey(s.polygon);
+    const a = analysisRef.current;
+    if (a.key === key && (a.found || a.attempts >= 3)) return;
+    if (a.key !== key) analysisRef.current = { key, attempts: 0, found: false };
+    analysisRef.current.attempts++;
+    try {
+      const lng0 = s.polygon[0]![0], lat0 = s.polygon[0]![1];
+      const near = (c: number[]) => Math.abs(c[0]! - lng0) < 0.016 && Math.abs(c[1]! - lat0) < 0.016;
+      const roads: RoadLine[] = [];
+      for (const f of map.querySourceFeatures('openmaptiles', { sourceLayer: 'transportation' })) {
+        const cls = String(f.properties?.class ?? '');
+        const g = f.geometry;
+        const lines = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+        for (const l of lines) if (l.some((c) => near(c))) roads.push({ coords: l as LngLat[], cls });
+      }
+      const names: { coords: number[][]; name: string }[] = [];
+      for (const f of map.querySourceFeatures('openmaptiles', { sourceLayer: 'transportation_name' })) {
+        const g = f.geometry;
+        const nm = String(f.properties?.['name:latin'] ?? f.properties?.name ?? '');
+        const lines = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+        for (const l of lines) if (nm && l.some((c) => near(c))) names.push({ coords: l, name: nm });
+      }
+      // attach names: a road piece takes the name of a named line sharing a vertex within ~3 m
+      for (const r of roads) {
+        const hit = names.find((n) => n.coords.some((c) => r.coords.some((p) => Math.abs(p[0] - c[0]!) < 3e-5 && Math.abs(p[1] - c[1]!) < 3e-5)));
+        if (hit) r.name = hit.name;
+      }
+      const buildings: BuildingFootprint[] = [];
+      for (const f of map.querySourceFeatures('openmaptiles', { sourceLayer: 'building' })) {
+        const g = f.geometry;
+        const rings = g.type === 'Polygon' ? [g.coordinates[0]] : g.type === 'MultiPolygon' ? g.coordinates.map((p) => p[0]) : [];
+        for (const r of rings) if (r && near(r[0]!)) buildings.push({ ring: r as LngLat[] });
+      }
+      const analysis = analyzeRoads(s.polygon, roads, buildings);
+      analysisRef.current.found = analysis.edges.some((e) => e.facesRoad);
+      const final = analysisRef.current.found || analysisRef.current.attempts >= 3;
+      dispatch({ type: 'SET_ROAD_ANALYSIS', key, analysis, final });
+      // tiles may still be streaming in: retry a couple of times before concluding "no road found"
+      if (!final) setTimeout(() => { if (mapRef.current) runRoadAnalysis(mapRef.current); }, 1500);
+    } catch (err) { console.debug('road analysis', err); }
+  }
+
+  // transit ring + access route overlays
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded || !map.getSource('transit-ring')) return;
+    const n = state.result?.transit.nearest;
+    const show = state.guides.transit && !!n && !state.drawing.active;
+    (map.getSource('transit-ring') as GeoSrc).setData(fc(show && n ? [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [circleRing(n.lngLat, 500)] } }] : []));
+    const ra = state.roadAnalysis?.key === polygonKey(state.polygon) ? state.roadAnalysis.analysis : null;
+    const routes = ra && !state.drawing.active && state.guides.roads ? ra.access.filter((a) => a.path.length > 1) : [];
+    (map.getSource('access-route') as GeoSrc).setData(fc(routes.map((a) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: a.path } }))));
+    (map.getSource('access-bottleneck') as GeoSrc).setData(fc(routes.map((a) => ({ type: 'Feature', properties: { label: `≈ ${a.minWidthM} m narrowest` }, geometry: { type: 'Point', coordinates: a.bottleneck } }))));
+    for (const id of ['zoning-fill', 'zoning-line', 'zoning-label']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', state.guides.zoning ? 'visible' : 'none');
+    for (const id of ['stations-circle', 'stations-label', 'transit-ring-fill', 'transit-ring-line']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', state.guides.transit ? 'visible' : 'none');
+    map.triggerRepaint();
+  }, [mapLoaded, state.result, state.roadAnalysis, state.polygon, state.guides, state.drawing.active]);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapLoaded) return;
@@ -542,6 +631,7 @@ export function MapContainer() {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         filterContextBuildings();
+        runRoadAnalysis(map);
         const adv = detectRoadConflicts(map, stateRef.current.polygon);
         const key = JSON.stringify(adv);
         if (key !== advisoryKeyRef.current) {
@@ -550,7 +640,7 @@ export function MapContainer() {
         }
       }, 250);
     };
-    advisoryKeyRef.current = ' '; // plot changed: always publish the next advisory result
+    advisoryKeyRef.current = '__reset__'; // plot changed: always publish the next advisory result
     map.on('idle', run);
     run();
     return () => { map.off('idle', run); if (timer) clearTimeout(timer); };
@@ -665,4 +755,15 @@ function segDist(a: [number, number], b: [number, number], c: [number, number], 
     return Math.hypot(p[0] - s[0] - t * dx, p[1] - s[1] - t * dy);
   };
   return Math.min(pd(a, c, d), pd(b, c, d), pd(c, a, b), pd(d, a, b));
+}
+
+/** Geodesic-enough circle (≤ 1 km) around a point, as a closed lng/lat ring */
+function circleRing(center: LngLat, radiusM: number, steps = 72): LngLat[] {
+  const out: LngLat[] = [];
+  const kLat = 1 / 110574, kLng = 1 / (111320 * Math.cos((center[1] * Math.PI) / 180));
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * 2 * Math.PI;
+    out.push([center[0] + Math.cos(a) * radiusM * kLng, center[1] + Math.sin(a) * radiusM * kLat]);
+  }
+  return out;
 }

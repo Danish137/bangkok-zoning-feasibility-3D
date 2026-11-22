@@ -16,7 +16,7 @@ export type BuildingType =
   | 'commercial-office'
   | 'mixed-use';
 
-export type UseCategory = 'residential' | 'commercial';
+export type UseCategory = 'residential' | 'commercial' | 'parking';
 
 export interface BuildingTypeConfig {
   label: string;
@@ -68,18 +68,53 @@ export const BUILDING_TYPES: Record<BuildingType, BuildingTypeConfig> = {
 };
 
 // ── Site input ──
+export type InputSource = 'user' | 'map-estimate';
+
 export interface RoadEdgeInput {
   edgeIndex: number;
   /** Public road reserve width (เขตทาง) in metres */
   widthM: number;
+  /** Where the width came from (default 'user') */
+  source?: InputSource;
+  /**
+   * Narrowest road reserve (m) along the route from this frontage to another public road >= 10 m
+   * (MR 33 Cl. 2 continuity). Unknown if omitted.
+   */
+  accessMinWidthM?: number;
+  accessSource?: InputSource;
 }
+
+export type ParkingMode = 'podium' | 'basement';
 
 export interface SiteInput {
   polygonLngLat: LngLatPolygon;
   roadEdges: RoadEdgeInput[];
   buildingType: BuildingType;
-  /** User declares the plot lies within 500 m of a mass-transit station (unverified) */
+  /** Fallback only when no station data is available: user declares 500 m station proximity (unverified) */
   nearTransitDeclared?: boolean;
+  /** Average net unit size for condominiums (m2); drives unit count, parking and EIA. Default 35 m2 */
+  avgUnitSizeSqm?: number;
+  /** Where required parking is placed. Default 'podium' (above-ground storeys) */
+  parkingMode?: ParkingMode;
+}
+
+/** Reference data the engine can use (bundled static assets; optional) */
+export interface ZoneFeature {
+  zone: string;
+  /** Polygons -> rings -> [lng, lat]; first ring outer, others holes */
+  polygons: LngLat[][][];
+  bbox: [number, number, number, number];
+}
+export interface StationPoint {
+  name: string;
+  nameEn: string;
+  network: string;
+  lngLat: LngLat;
+}
+export interface SiteData {
+  zones?: ZoneFeature[];
+  zoningSource?: string;
+  stations?: StationPoint[];
 }
 
 export type EdgeKind = 'road' | 'side' | 'rear';
@@ -91,6 +126,11 @@ export interface PlotEdge {
   lengthM: number;
   kind: EdgeKind;
   roadWidthM?: number;
+  roadSource?: InputSource;
+  accessMinWidthM?: number;
+  accessSource?: InputSource;
+  /** False when part of the plot lies behind this edge's line (edge inside a concave notch) */
+  onHull: boolean;
 }
 
 // ── Envelope ──
@@ -111,6 +151,8 @@ export interface SkyPlane {
   roadWidthM: number;
   active: boolean;
   reason: string;
+  /** Edge not on the plot's convex hull: the plane governs only the part of the plot in front of the road line */
+  frontOnly: boolean;
 }
 
 export interface Envelope {
@@ -123,6 +165,11 @@ export interface Envelope {
   /** Area of setback-clipped pieces that were too small/disconnected and discarded */
   discardedAreaSqm: number;
   skyPlanes: SkyPlane[];
+  /** Stricter buildable polygon for storeys >= upperFromIndex (BMA 2544 Cl. 54: 3 m from private land from the 3rd storey) */
+  upperBuildablePolygon?: Polygon;
+  upperFromIndex?: number;
+  /** Per-edge setback distances used for the upper polygon */
+  upperSetbacks?: number[];
   /** Max roof-deck height for the class (null = no height limit other than FAR / sky plane) */
   maxHeightM: number | null;
   heightRule: string;
@@ -132,6 +179,7 @@ export interface Envelope {
 
 // ── Floors ──
 export interface FloorResult {
+  /** Storey index: 0 = ground storey; basement levels are -1, -2, ... */
   index: number;
   elevationM: number;
   heightM: number;
@@ -147,6 +195,8 @@ export interface FloorResult {
   isPartial: boolean;
   /** Which sky planes reduced this floor (edge indices) */
   skyPlaneEdges: number[];
+  /** Parking spaces this storey provides (parking storeys only) */
+  parkingSpaces?: number;
 }
 
 // ── Compliance ──
@@ -162,11 +212,16 @@ export type GeometryKey =
   | 'open-space'
   | 'envelope'
   | 'floors'
-  | 'frontage';
+  | 'frontage'
+  | 'parking'
+  | 'front-space'
+  | 'zone'
+  | 'transit'
+  | 'access-route';
 
 export interface ComplianceCheck {
   id: string;
-  group: 'Zoning' | 'Open space' | 'Setbacks' | 'Height & form' | 'Access' | 'Classification' | 'Integrity';
+  group: 'Zoning' | 'Open space' | 'Setbacks' | 'Height & form' | 'Access' | 'Parking' | 'Classification' | 'Integrity';
   label: string;
   actual: string;
   required: string;
@@ -177,10 +232,12 @@ export interface ComplianceCheck {
   geometry?: GeometryKey;
   /** Edge indices the check relates to (for 3D highlighting) */
   edges?: number[];
+  /** The result depends on map-estimated inputs (road or access width) rather than surveyed values */
+  inputConfidence?: 'estimated';
 }
 
 export interface OpenSpaceRequirement {
-  id: 'zoning-osr' | 'mr55-33' | 'mr33-6';
+  id: 'zoning-osr' | 'mr55-33' | 'mr33-6' | 'bco-52';
   label: string;
   basis: string;
   requiredSqm: number;
@@ -196,6 +253,36 @@ export interface EiaAssessment {
 
 export type DesignVariant = 'max-yield' | 'open-space';
 
+export interface ParkingResult {
+  mode: ParkingMode;
+  requiredSpaces: number;
+  providedSpaces: number;
+  /** Requirement derivation lines (clause + arithmetic) */
+  basis: string[];
+  areaPerSpaceSqm: number;
+  parkingAreaSqm: number;
+  parkingStoreys: number;
+  basementLevels: number;
+  units: number;
+  avgUnitSizeSqm: number;
+  isLargeBuilding: boolean;
+  warnings: string[];
+}
+
+export interface FrontSpaceResult {
+  applies: boolean;
+  perimeterM: number;
+  roadFaceM: number;
+  /** Cl. 53 path: building face on the road longer than perimeter / 8 and within 20 m of the road */
+  cl53Ok: boolean;
+  /** Cl. 52(6) path: front open space >= requiredWidthM along >= perimeter / 6 */
+  cl526Ok: boolean;
+  requiredWidthM: number;
+  wideFrontM: number;
+  /** The footprint depth was limited by the generator to satisfy Cl. 53 */
+  depthLimited: boolean;
+}
+
 export interface DesignResult {
   variant: DesignVariant;
   label: string;
@@ -203,8 +290,11 @@ export interface DesignResult {
   description: string;
   envelope: Envelope;
   floors: FloorResult[];
+  /** Basement storeys (parking), index -1, -2, ... (counted in total floor area / FAR) */
+  basementFloors: FloorResult[];
   totalGFA: number;
   residentialGFA: number;
+  parkingGFA: number;
   commercialGFA: number;
   far: number;
   heightM: number;
@@ -224,6 +314,8 @@ export interface DesignResult {
   isHighRise: boolean;
   isExtraLarge: boolean;
   eia: EiaAssessment;
+  parking: ParkingResult;
+  frontSpace: FrontSpaceResult;
   limitingConstraints: string[];
   checks: ComplianceCheck[];
   /** True when no check FAILs (UNVERIFIED items may remain) */
@@ -233,12 +325,32 @@ export interface DesignResult {
 }
 
 export interface JurisdictionResult {
-  status: 'UNVERIFIED' | 'FAIL';
+  status: 'PASS' | 'UNVERIFIED' | 'FAIL';
   insideBangkok: boolean;
+  message: string;
+  /** Zone containing (most of) the plot, from the BMA GIS layer */
+  zone?: string;
+  /** Share of plot area per zone (sums to <= 1; the rest is outside any mapped zone) */
+  overlaps: { zone: string; fraction: number }[];
+  /** Distance from the plot to the nearest Yor.9 boundary when fully inside (m) */
+  boundaryMarginM?: number;
+  dataSource?: string;
+}
+
+export interface TransitResult {
+  source: 'station-data' | 'declared' | 'none';
+  nearest?: { name: string; nameEn: string; network: string; lngLat: LngLat; minDistanceM: number; maxDistanceM: number };
+  /** Is the whole plot within 500 m ('all'), part of it ('part'), or none of it? */
+  within500: 'all' | 'part' | 'none' | 'unknown';
+  /** Proximity accepted for Plan Cl. 16 use conditions (conservative: whole plot within 500 m) */
+  qualifies: boolean;
   message: string;
 }
 
 export interface RoadEligibility {
+  /** Continuity of the >= 10 m (>= 18 m) road to another public road (MR 33 Cl. 2) */
+  continuity: 'ok' | 'fail' | 'unknown';
+  inputConfidence?: 'estimated';
   mr33Allowed: boolean;
   /** Max total floor area allowed for an MR 33 building by road width (Clause 2) */
   mr33MaxGFA: number;
@@ -257,6 +369,7 @@ export interface FeasibilityResult {
   plotAreaThai: string;
   edges: PlotEdge[];
   jurisdiction: JurisdictionResult;
+  transit: TransitResult;
   roadEligibility: RoadEligibility;
   maxFARGFA: number;
   designA: DesignResult | null;

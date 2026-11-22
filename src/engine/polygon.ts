@@ -390,7 +390,7 @@ export function capsule(a: MetricPoint, b: MetricPoint, d: number, arcSegments =
  * Distance setback: plot minus the d_i-buffer of each edge. The arc approximation is
  * conservative (chords lie outside the true circle), so the result never encroaches.
  */
-export function setbackPolygon(poly: Polygon, distances: number[]): PieceResult {
+export function setbackPolygon(poly: Polygon, distances: number[], within?: Polygon): PieceResult {
   const n = poly.length;
   if (distances.length !== n) throw new Error(`Expected ${n} setbacks, got ${distances.length}`);
   const caps: PCMulti[] = [];
@@ -400,13 +400,21 @@ export function setbackPolygon(poly: Polygon, distances: number[]): PieceResult 
     caps.push([[toRing(capsule(poly[i]!, poly[(i + 1) % n]!, d, 8))]]);
   }
   if (caps.length === 0) return { polygon: poly, areaSqm: polygonArea(poly), discardedAreaSqm: 0, pieceCount: 1 };
-  // Subtract one capsule at a time: many small operations are far more robust in polygon-clipping
-  // than one operation with many overlapping inputs.
-  let result: PCMulti = [[toRing(poly)]];
-  for (const cap of caps) {
-    result = safeClip('difference', result, cap);
-    if (result.length === 0) break;
+  // One sweep over all capsules is ~n× faster; if polygon-clipping fails on that (overlapping arcs at
+  // shared vertices), fall back to subtracting one capsule at a time, which is far more robust.
+  let result: PCMulti;
+  try {
+    result = polygonClipping.difference([[toRing(poly)]], ...caps);
+  } catch {
+    result = [[toRing(poly)]];
+    for (const cap of caps) {
+      result = safeClip('difference', result, cap);
+      if (result.length === 0) break;
+    }
   }
+  // Restrict to a container (e.g. the legal buildable polygon) BEFORE picking the largest piece,
+  // so a larger setback never selects a piece outside the container.
+  if (within && result.length) result = safeClip('intersection', result, [[toRing(within)]]);
   return largestPiece(result);
 }
 
@@ -477,7 +485,15 @@ export function projectedExtent(poly: Polygon, dir: MetricPoint): number {
 }
 
 /** Minimum width of a polygon (smallest projected extent over its edge normals) */
+const minWidthMemo = new WeakMap<Polygon, number>();
 export function minimumWidth(poly: Polygon): number {
+  const m = minWidthMemo.get(poly);
+  if (m !== undefined) return m;
+  const v = minimumWidthRaw(poly);
+  minWidthMemo.set(poly, v);
+  return v;
+}
+function minimumWidthRaw(poly: Polygon): number {
   let w = Infinity;
   for (let i = 0; i < poly.length; i++) {
     const n = edgeOutwardNormal(poly[i]!, poly[(i + 1) % poly.length]!);
@@ -485,4 +501,100 @@ export function minimumWidth(poly: Polygon): number {
     w = Math.min(w, projectedExtent(poly, n));
   }
   return Number.isFinite(w) ? w : 0;
+}
+
+// ── Fast exact predicates (no boolean ops) ──
+
+/** Is point p on segment a–b within eps? */
+function onSeg(p: MetricPoint, a: MetricPoint, b: MetricPoint, eps: number): boolean {
+  return pointSegmentDistance(p, a, b) <= eps;
+}
+
+/** Proper crossing (interiors intersect at a single point, not touching) */
+function properCross(a1: MetricPoint, a2: MetricPoint, b1: MetricPoint, b2: MetricPoint, eps: number): boolean {
+  const d1 = orient(b1, b2, a1), d2 = orient(b1, b2, a2), d3 = orient(a1, a2, b1), d4 = orient(a1, a2, b2);
+  const s = (v: number) => (v > eps ? 1 : v < -eps ? -1 : 0);
+  return s(d1) * s(d2) < 0 && s(d3) * s(d4) < 0;
+}
+
+/**
+ * Is polygon `inner` inside polygon `outer` (boundaries may touch)? Exact up to eps (m):
+ * every vertex of inner is inside or on outer, no edge of inner properly crosses an edge of outer,
+ * and every edge midpoint of inner is inside or on outer (catches edges passing through reflex notches).
+ */
+export function polygonWithin(inner: Polygon, outer: Polygon, eps = 1e-6): boolean {
+  if (inner.length < 3) return true;
+  if (outer.length < 3) return false;
+  const inside = (p: MetricPoint) => {
+    if (pointInPolygon(p, outer)) return true;
+    for (let i = 0; i < outer.length; i++) if (onSeg(p, outer[i]!, outer[(i + 1) % outer.length]!, eps)) return true;
+    return false;
+  };
+  for (let i = 0; i < inner.length; i++) {
+    const a = inner[i]!, b = inner[(i + 1) % inner.length]!;
+    if (!inside(a)) return false;
+    if (!inside([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])) return false;
+    for (let j = 0; j < outer.length; j++) {
+      if (properCross(a, b, outer[j]!, outer[(j + 1) % outer.length]!, eps * eps)) return false;
+    }
+  }
+  return true;
+}
+
+/** Overhang area of `inner` outside `outer`: 0 when contained (fast path), otherwise exact boolean difference */
+export function overhangArea(inner: Polygon, outer: Polygon): number {
+  return polygonWithin(inner, outer) ? 0 : differenceArea(inner, outer);
+}
+
+/** Edge i lies on the convex hull side: no vertex of the polygon is behind the edge's line (beyond eps) */
+export function isEdgeOnHull(poly: Polygon, i: number, eps = 1e-6): boolean {
+  const a = poly[i]!, b = poly[(i + 1) % poly.length]!;
+  return poly.every((v) => signedDistanceToEdgeLine(v, a, b) >= -eps);
+}
+
+/**
+ * Remove the slab {0 ≤ d < t} in front of edge a→b (d = signed inward distance to the edge line).
+ * Points behind the line (d < 0) are kept: they do not face this road. Equivalent to a half-plane
+ * clip when the edge is on the hull. Returns the largest remaining piece.
+ */
+export function removeSlab(poly: Polygon, a: MetricPoint, b: MetricPoint, t: number): PieceResult {
+  if (t <= 0) return { polygon: poly, areaSqm: polygonArea(poly), discardedAreaSqm: 0, pieceCount: 1 };
+  const [nx, ny] = edgeInwardNormal(a, b);
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len, L = 20000;
+  const slab: Polygon = [
+    [a[0] - ux * L, a[1] - uy * L],
+    [b[0] + ux * L, b[1] + uy * L],
+    [b[0] + ux * L + nx * t, b[1] + uy * L + ny * t],
+    [a[0] - ux * L + nx * t, a[1] - uy * L + ny * t],
+  ];
+  return largestPiece(safeClip('difference', [[toRing(poly)]], [[toRing(slab)]]));
+}
+
+/** Area of the part of `poly` inside the slab {0 ≤ d < t} of edge a→b (for verification) */
+export function slabOverlapArea(poly: Polygon, a: MetricPoint, b: MetricPoint, t: number): number {
+  if (t <= 0 || poly.length < 3) return 0;
+  const [nx, ny] = edgeInwardNormal(a, b);
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len, L = 20000;
+  const slab: Polygon = [
+    [a[0] - ux * L, a[1] - uy * L], [b[0] + ux * L, b[1] + uy * L],
+    [b[0] + ux * L + nx * t, b[1] + uy * L + ny * t], [a[0] - ux * L + nx * t, a[1] - uy * L + ny * t],
+  ];
+  return multiArea(safeClip('intersection', [[toRing(poly)]], [[toRing(slab)]]));
+}
+
+/** Intersection area of two polygons (all pieces) */
+export function intersectionArea(a: Polygon, b: Polygon): number {
+  if (a.length < 3 || b.length < 3) return 0;
+  return multiArea(safeClip('intersection', [[toRing(a)]], [[toRing(b)]]));
+}
+
+/** Intersection of a polygon with a multipolygon given as rings (outer + holes), all pieces' total area */
+export function intersectionAreaWithRings(a: Polygon, polygons: Polygon[][]): number {
+  if (a.length < 3 || polygons.length === 0) return 0;
+  const mp: PCMulti = polygons.map((rings) => rings.map((r) => toRing(r)));
+  return multiArea(safeClip('intersection', [[toRing(a)]], mp));
 }

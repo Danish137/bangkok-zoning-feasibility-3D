@@ -18,6 +18,9 @@ export function buildReport(r: FeasibilityResult) {
     totalFloorAreaSqm: d.totalGFA,
     residentialFloorAreaSqm: d.residentialGFA,
     commercialFloorAreaSqm: d.commercialGFA,
+    parkingFloorAreaSqm: d.parkingGFA,
+    parking: d.parking,
+    frontSpace: d.frontSpace,
     far: d.far,
     heightM: d.heightM,
     storeys: d.floorCount,
@@ -33,9 +36,9 @@ export function buildReport(r: FeasibilityResult) {
     skyPlanes: d.envelope.skyPlanes,
     limitingConstraints: d.limitingConstraints,
     checks: d.checks,
-    floorSchedule: d.floors.map((f) => ({
-      storey: f.index + 1, use: f.use, elevationM: f.elevationM, heightM: f.heightM, roofM: f.topM,
-      areaSqm: f.areaSqm, allowableAreaSqm: f.allowableAreaSqm, trimmed: f.isPartial,
+    floorSchedule: [...d.basementFloors, ...d.floors].map((f) => ({
+      storey: f.index < 0 ? `B${-f.index}` : `L${f.index + 1}`, use: f.use, elevationM: f.elevationM, heightM: f.heightM, roofM: f.topM,
+      areaSqm: f.areaSqm, allowableAreaSqm: f.allowableAreaSqm, trimmed: f.isPartial, parkingSpaces: f.parkingSpaces ?? null,
     })),
   });
   return {
@@ -47,8 +50,12 @@ export function buildReport(r: FeasibilityResult) {
       plotAreaSqm: r.plotAreaSqm,
       plotAreaThai: r.plotAreaThai,
       anchor: r.anchor,
-      edges: r.edges.map((e) => ({ edge: e.index + 1, lengthM: e.lengthM, kind: e.kind, roadWidthM: e.roadWidthM ?? null })),
+      edges: r.edges.map((e) => ({
+        edge: e.index + 1, lengthM: e.lengthM, kind: e.kind, roadWidthM: e.roadWidthM ?? null, roadWidthSource: e.roadSource ?? null,
+        accessRouteMinWidthM: e.accessMinWidthM ?? null, accessRouteSource: e.accessSource ?? null,
+      })),
       jurisdiction: r.jurisdiction,
+      transit: r.transit,
       roadEligibility: r.roadEligibility,
     },
     zoning: { zone: YOR9.code, maxFAR: YOR9.maxFAR, minOSRPctOfGFA: YOR9.minOSRFractionOfGFA * 100, maxFloorAreaSqm: r.maxFARGFA },
@@ -77,11 +84,12 @@ export function ReportView() {
     ['Building class', (d) => d.envelope.classLabel.split(' (')[0]!],
     ['Total floor area', (d) => `${fmtNum(d.totalGFA)} m²`],
     ['FAR (max 7.00)', (d) => d.far.toFixed(2)],
-    ['Height / storeys', (d) => `${fmtNum(d.heightM, 1)} m / ${d.floorCount}`],
+    ['Residential / units', (d) => (d.residentialGFA > 0 ? `${fmtNum(d.residentialGFA)} m² / ≈ ${d.parking.units}` : '—')],
+    ['Parking (prov./req.)', (d) => `${d.parking.providedSpaces} / ${d.parking.requiredSpaces} (${d.parking.mode === 'podium' ? `${d.parking.parkingStoreys} podium` : `${d.parking.basementLevels} basement`})`],
+    ['Height / storeys', (d) => `${fmtNum(d.heightM, 1)} m / ${d.floorCount}${d.basementFloors.length ? ` + B${d.basementFloors.length}` : ''}`],
     ['Footprint', (d) => `${fmtNum(d.footprintSqm)} m² (${d.groundCoveragePct.toFixed(0)} %)`],
     ['Open space', (d) => `${fmtNum(d.openSpaceSqm)} m² (${d.openSpacePct.toFixed(0)} %)`],
     ['Open space required', (d) => `${fmtNum(d.requiredOpenSpaceSqm)} m²`],
-    ['Est. units', (d) => (d.residentialGFA > 0 ? `≈ ${d.eia.estimatedUnits}` : '—')],
     ['EIA', (d) => (d.eia.status === 'required' ? 'Required' : d.eia.status === 'check' ? 'Check' : 'Likely not')],
     ['Compliance', (d) => (d.compliant ? `No fails · ${d.unverifiedCount} unverified` : `${d.failCount} FAIL`)],
   ];
@@ -102,9 +110,10 @@ ${JSON.stringify({ polygon: r.input.polygonLngLat, roadEdges: r.input.roadEdges,
 
       <Section title="Site">
         <table className="w-full text-[10.5px]"><tbody className="divide-y divide-slate-800">
-          <Row k="Zone" v={`${YOR9.code}: user-declared, not map-verified`} />
+          <Row k="Zone" v={`${r.jurisdiction.zone ?? 'not determined'} (${r.jurisdiction.status}${r.jurisdiction.boundaryMarginM !== undefined && Number.isFinite(r.jurisdiction.boundaryMarginM) ? `, ${r.jurisdiction.boundaryMarginM.toFixed(0)} m from boundary` : ''})`} />
+          <Row k="Nearest station" v={r.transit.nearest ? `${r.transit.nearest.nameEn || r.transit.nearest.name}: ${fmtNum(r.transit.nearest.minDistanceM)}–${fmtNum(r.transit.nearest.maxDistanceM)} m` : r.transit.message || '—'} />
           <Row k="Plot area" v={`${fmtNum(r.plotAreaSqm, 1)} m² (${r.plotAreaThai})`} />
-          <Row k="Roads" v={r.edges.filter((e) => e.kind === 'road').map((e) => `E${e.index + 1}: ${e.roadWidthM} m reserve, ${fmtNum(e.lengthM, 1)} m frontage`).join('; ') || 'None declared'} />
+          <Row k="Roads" v={r.edges.filter((e) => e.kind === 'road').map((e) => `E${e.index + 1}: ${e.roadWidthM} m${e.roadSource === 'map-estimate' ? ' (est.)' : ''} reserve, ${fmtNum(e.lengthM, 1)} m frontage${e.accessMinWidthM !== undefined ? `, route min ${e.accessMinWidthM} m${e.accessSource === 'map-estimate' ? ' (est.)' : ''}` : ''}`).join('; ') || 'None declared'} />
           <Row k="Building type" v={BUILDING_TYPES[r.input.buildingType].label} />
           <Row k="High-rise eligible" v={r.roadEligibility.mr33Allowed ? 'Yes' : 'No'} />
           <Row k="FAR 7 floor area" v={`${fmtNum(r.maxFARGFA)} m²`} />
@@ -133,12 +142,17 @@ ${JSON.stringify({ polygon: r.input.polygonLngLat, roadEdges: r.input.roadEdges,
               <tr key={sb.edgeIndex}><td className="py-0.5 text-slate-400">Setback E{sb.edgeIndex + 1} ({sb.kind})</td><td className="py-0.5 text-right text-slate-300">{fmtNum(sb.distanceM, 2)} m · {sb.reference}</td></tr>
             ))}
             <tr><td className="py-0.5 text-slate-400">Height rule</td><td className="py-0.5 text-right text-slate-300">{d!.envelope.heightRule}</td></tr>
+            <tr><td className="py-0.5 text-slate-400">Front space (BMA Cl. 52(6)/53)</td><td className="py-0.5 text-right text-slate-300">{!d!.frontSpace.applies ? 'n/a' : d!.frontSpace.cl53Ok ? `road face ${fmtNum(d!.frontSpace.roadFaceM, 1)} m > ⅛ perimeter` : d!.frontSpace.cl526Ok ? `≥ ${d!.frontSpace.requiredWidthM} m front space` : 'not met'}</td></tr>
           </tbody></table>
+          <div className="rounded border border-slate-700/50 bg-slate-800/20 px-2 py-1 text-[10px] leading-snug text-slate-300" data-testid={`parking-basis-${d!.variant}`}>
+            <div className="font-semibold text-slate-200">Parking: {d!.parking.requiredSpaces} required, {d!.parking.providedSpaces} provided ({d!.parking.mode})</div>
+            {d!.parking.basis.map((b) => <div key={b}>· {b}</div>)}
+          </div>
           <details className="rounded border border-slate-700/50 bg-slate-800/20 px-2 py-1">
-            <summary className="cursor-pointer text-[10.5px] text-slate-300">Floor schedule ({d!.floorCount} storeys, Σ {fmtNum(d!.totalGFA, 2)} m²)</summary>
+            <summary className="cursor-pointer text-[10.5px] text-slate-300">Floor schedule ({d!.floorCount} storeys{d!.basementFloors.length ? ` + ${d!.basementFloors.length} basement` : ''}, Σ {fmtNum(d!.totalGFA, 2)} m²)</summary>
             <table className="mt-1 w-full text-[10px] tabular-nums"><tbody>
-              {d!.floors.map((f) => (
-                <tr key={f.index}><td className="text-slate-400">L{f.index + 1} {f.use === 'commercial' ? '(retail)' : ''}</td><td className="text-right text-slate-500">+{f.elevationM.toFixed(1)} m</td><td className="text-right text-slate-200">{f.areaSqm.toFixed(2)} m²</td></tr>
+              {[...d!.basementFloors, ...d!.floors].map((f) => (
+                <tr key={f.index}><td className="text-slate-400">{f.index < 0 ? `B${-f.index}` : `L${f.index + 1}`} {f.use === 'commercial' ? '(retail)' : f.use === 'parking' ? `(parking, ${f.parkingSpaces ?? 0})` : ''}</td><td className="text-right text-slate-500">{f.elevationM >= 0 ? '+' : ''}{f.elevationM.toFixed(1)} m</td><td className="text-right text-slate-200">{f.areaSqm.toFixed(2)} m²</td></tr>
               ))}
             </tbody></table>
           </details>

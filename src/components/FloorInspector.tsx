@@ -11,10 +11,15 @@ export function FloorInspector() {
   const r = s.result;
   if (!r || !design || design.floors.length === 0) return <Callout tone="warn">No floors to inspect. Select or draw a plot first.</Callout>;
   const floors = design.floors;
-  const idx = s.selectedFloor !== null && s.selectedFloor < floors.length ? s.selectedFloor : 0;
-  const f = floors[idx]!;
-  const sum = floors.reduce((a, x) => a + x.areaSqm, 0);
-  const select = (i: number) => dispatch({ type: 'SET_SELECTED_FLOOR', floor: Math.max(0, Math.min(floors.length - 1, i)) });
+  // basements (index -1, -2, ...) below the ground storey; the selector runs from the lowest basement up
+  const all = [...[...design.basementFloors].sort((a, b) => a.index - b.index), ...floors];
+  const minIdx = all[0]!.index, maxIdx = floors.length - 1;
+  const idx = s.selectedFloor !== null && s.selectedFloor >= minIdx && s.selectedFloor <= maxIdx ? s.selectedFloor : 0;
+  const f = all.find((x) => x.index === idx) ?? floors[0]!;
+  const sum = all.reduce((a, x) => a + x.areaSqm, 0);
+  const select = (i: number) => dispatch({ type: 'SET_SELECTED_FLOOR', floor: Math.max(minIdx, Math.min(maxIdx, i)) });
+  const name = (i: number) => (i < 0 ? `B${-i}` : `L${i + 1}`);
+  const useLabel = (x: FloorResult) => (x.use === 'parking' ? `Parking (${x.parkingSpaces ?? 0} spaces)` : x.use === 'commercial' ? 'Retail/office' : 'Residential');
 
   return (
     <div data-testid="floor-inspector" className="flex flex-col gap-5 text-xs">
@@ -28,20 +33,20 @@ export function FloorInspector() {
         ))}
       </div>
 
-      <Section title={`Storey ${idx + 1} of ${floors.length}`} aside={
+      <Section title={idx < 0 ? `Basement ${-idx} of ${design.basementFloors.length}` : `Storey ${idx + 1} of ${floors.length}`} aside={
         <div className="flex gap-1">
-          <Button testId="floor-down" onClick={() => select(idx - 1)} disabled={idx === 0}>▼</Button>
-          <Button testId="floor-up" onClick={() => select(idx + 1)} disabled={idx === floors.length - 1}>▲</Button>
+          <Button testId="floor-down" onClick={() => select(idx - 1)} disabled={idx === minIdx}>▼</Button>
+          <Button testId="floor-up" onClick={() => select(idx + 1)} disabled={idx === maxIdx}>▲</Button>
         </div>
       }>
-        <input type="range" min={0} max={floors.length - 1} value={idx} data-testid="floor-scrubber"
+        <input type="range" min={minIdx} max={maxIdx} value={idx} data-testid="floor-scrubber"
           onChange={(e) => select(Number(e.target.value))} className="w-full accent-amber-500" />
         <div className="grid grid-cols-3 gap-1.5">
           <Metric label="Floor area" value={`${fmtNum(f.areaSqm, 1)} m²`} tone="accent" sub={f.isPartial ? 'trimmed to cap' : undefined} />
           <Metric label="Allowable" value={`${fmtNum(f.allowableAreaSqm, 1)} m²`} sub={`${((f.areaSqm / f.allowableAreaSqm) * 100).toFixed(0)} % used`} />
-          <Metric label="Use" value={f.use === 'commercial' ? 'Retail/office' : 'Residential'} />
-          <Metric label="Slab level" value={`+${fmtNum(f.elevationM, 2)} m`} />
-          <Metric label="Roof of storey" value={`+${fmtNum(f.topM, 2)} m`} />
+          <Metric label="Use" value={useLabel(f)} />
+          <Metric label="Slab level" value={`${f.elevationM >= 0 ? '+' : ''}${fmtNum(f.elevationM, 2)} m`} />
+          <Metric label="Roof of storey" value={`${f.topM >= 0 ? '+' : ''}${fmtNum(f.topM, 2)} m`} />
           <Metric label="Storey height" value={`${fmtNum(f.heightM, 2)} m`} />
         </div>
         <div className="text-[10.5px] leading-snug text-slate-400" data-testid="floor-restrictions">
@@ -66,11 +71,11 @@ export function FloorInspector() {
               <tr><th className="px-2 py-1 text-left">Storey</th><th className="px-2 py-1 text-right">Level</th><th className="px-2 py-1 text-right">Allowable</th><th className="px-2 py-1 text-right">Area m²</th></tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {floors.map((x) => (
+              {[...all].reverse().map((x) => (
                 <tr key={x.index} onClick={() => select(x.index)}
-                  className={`cursor-pointer ${x.index === idx ? 'bg-amber-500/15 text-amber-100' : 'text-slate-300 hover:bg-slate-800/60'}`}>
-                  <td className="px-2 py-0.5">L{x.index + 1}{x.use === 'commercial' ? ' · R' : ''}{x.isPartial ? ' *' : ''}</td>
-                  <td className="px-2 py-0.5 text-right text-slate-400">+{x.elevationM.toFixed(1)}</td>
+                  className={`cursor-pointer ${x.index === idx ? 'bg-amber-500/15 text-amber-100' : x.use === 'parking' ? 'text-slate-400 hover:bg-slate-800/60' : 'text-slate-300 hover:bg-slate-800/60'}`}>
+                  <td className="px-2 py-0.5">{name(x.index)}{x.use === 'commercial' ? ' · R' : x.use === 'parking' ? ' · P' : ''}{x.isPartial ? ' *' : ''}</td>
+                  <td className="px-2 py-0.5 text-right text-slate-400">{x.elevationM >= 0 ? '+' : ''}{x.elevationM.toFixed(1)}</td>
                   <td className="px-2 py-0.5 text-right text-slate-500">{x.allowableAreaSqm.toFixed(1)}</td>
                   <td className="px-2 py-0.5 text-right">{x.areaSqm.toFixed(2)}</td>
                 </tr>
@@ -81,7 +86,7 @@ export function FloorInspector() {
             </tfoot>
           </table>
         </div>
-        <div className="text-[9.5px] text-slate-500">Gross floor area inside the outer walls (MR 33 "พื้นที่อาคาร"), not sellable area. R = retail storey, * = trimmed to the floor-area cap.</div>
+        <div className="text-[9.5px] text-slate-500">Gross floor area inside the outer walls (MR 33 "พื้นที่อาคาร"), incl. parking and basements; not sellable area. R = retail, P = parking, B = basement, * = trimmed to the floor-area cap.</div>
       </Section>
     </div>
   );

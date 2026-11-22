@@ -2,17 +2,17 @@
   {
     "name": "app loads with map, 3D layer and initial result",
     "ok": true,
-    "detail": "7051 ms to idle"
+    "detail": "7502 ms to idle"
   },
   {
     "name": "real surrounding buildings rendered (OSM building-3d)",
     "ok": true,
-    "detail": "11 building features in view"
+    "detail": "3 building features in view"
   },
   {
     "name": "first click shows a vertex immediately",
     "ok": true,
-    "detail": "vertex markers=1, drawn 0 ms after click event (53 ms incl. automation)"
+    "detail": "vertex markers=1, drawn 0 ms after click event (51 ms incl. automation)"
   },
   {
     "name": "live preview line from first vertex to cursor",
@@ -45,49 +45,74 @@
     "detail": "0 context buildings still rendered inside the plot"
   },
   {
-    "name": "two road edges with independent widths (18 m + 12 m) update live without reload",
+    "name": "road analysis ran for the drawn plot",
     "ok": true,
-    "detail": "roads=[{\"edgeIndex\":0,\"widthM\":18},{\"edgeIndex\":1,\"widthM\":12}], gfa 9998.99961713821 → 9998.99961713821"
+    "detail": "auto-detected roads: []"
+  },
+  {
+    "name": "two road edges with independent surveyed widths (18 m + 12 m) update live without reload",
+    "ok": true,
+    "detail": "roads=0:18:user,1:12:user, gfa 9998.999805432699 → 9998.99936728117"
   },
   {
     "name": "road width 18 → 4 m recomputes setbacks live",
     "ok": true,
-    "detail": "271 ms input→result (worker), edge-1 setback 2 → 4 m"
+    "detail": "57 ms input→result (worker), edge-1 setback 3 → 4 m"
   },
   {
     "name": "dragging a vertex reshapes the plot and recomputes",
     "ok": true,
-    "detail": "gfa 9998.998175706867 → 9998.984750236756"
+    "detail": "gfa 9998.99936728117 → 9998.999735594545"
   },
   {
-    "name": "corner preset loads per-edge widths",
+    "name": "corner preset loads two map-estimated frontages",
     "ok": true,
-    "detail": "[{\"edgeIndex\":0,\"widthM\":18},{\"edgeIndex\":1,\"widthM\":12}]"
+    "detail": "[{\"edgeIndex\":0,\"widthM\":20,\"source\":\"map-estimate\",\"accessMinWidthM\":20,\"accessSource\":\"map-estimate\"},{\"edgeIndex\":1,\"widthM\":7,\"source\":\"map-estimate\",\"accessMinWidthM\":5,\"accessSource\":\"map-estimate\"}]"
+  },
+  {
+    "name": "zone detected automatically from the BMA GIS layer",
+    "ok": true,
+    "detail": "ย.9 PASS, 144 m from boundary"
+  },
+  {
+    "name": "nearest mass-transit station computed",
+    "ok": true,
+    "detail": "Ramkhamhaeng, 1105 m"
+  },
+  {
+    "name": "zoning overlay rendered on the map",
+    "ok": true,
+    "detail": "20 zone features in view"
   },
   {
     "name": "Design A and B are distinct and switchable",
     "ok": true,
-    "detail": "A=41289.93758088098 m², B=41289.93516777079 m²"
+    "detail": "A=21087.05983731793 m², B=21087.0598745819 m²"
   },
   {
     "name": "orbit 180° renders (frame rate measured)",
     "ok": true,
-    "detail": "58.3 fps (headless, software WebGL)"
+    "detail": "55.0 fps (headless, software WebGL)"
   },
   {
     "name": "clicking a storey in 3D selects it",
     "ok": true,
-    "detail": "selectedFloor=10"
+    "detail": "selectedFloor=9"
   },
   {
     "name": "floor selector + schedule total reconciles with GFA",
     "ok": true,
-    "detail": "L6, Σ=41289.94, GFA=41289.93758088098"
+    "detail": "L6, Σ=21087.06, GFA=21087.05983731793"
   },
   {
     "name": "switching design in floor stage updates floors",
     "ok": true,
-    "detail": "B floors=18"
+    "detail": "B floors=20"
+  },
+  {
+    "name": "parking mode → basement levels replace podium parking",
+    "ok": true,
+    "detail": "3 basement level(s), 195/176 spaces"
   },
   {
     "name": "hovering a rule highlights it in 3D",
@@ -95,19 +120,24 @@
     "detail": "hovered=sky-plane"
   },
   {
-    "name": "checklist shows PASS/FAIL/UNVERIFIED states; jurisdiction never PASS",
+    "name": "checklist lists every rule with a status; zone PASS from the GIS layer for this ย.9 preset",
     "ok": true,
-    "detail": "21 checks: PASS=16 FAIL=0 UNVERIFIED=3 INFO=2 N/A=0"
+    "detail": "27 checks: PASS=23 FAIL=0 UNVERIFIED=0 INFO=4 N/A=0"
   },
   {
     "name": "Design B has its own independent checklist",
     "ok": true,
-    "detail": "21 checks"
+    "detail": "27 checks"
+  },
+  {
+    "name": "checks that rely on map-estimated widths carry an EST. INPUT badge",
+    "ok": true,
+    "detail": "7 badges"
   },
   {
     "name": "JSON export contains both designs, schedules, sources, assumptions",
     "ok": true,
-    "detail": "A 11 storeys, B 18 storeys"
+    "detail": "A 12 storeys, B 20 storeys"
   },
   {
     "name": "plot outside Bangkok → jurisdiction FAIL",
@@ -117,7 +147,7 @@
   {
     "name": "no memory leak across 48 preset/stage switches (forced GC)",
     "ok": true,
-    "detail": "heap after GC: 34.1 → 37.1 → 43.8 MB"
+    "detail": "heap after GC: 53.3 → 45.5 → 37.6 MB"
   },
   {
     "name": "WebGL context alive after stress",

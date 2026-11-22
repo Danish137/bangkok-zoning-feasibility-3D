@@ -4,6 +4,7 @@
 import { useEffect, useRef } from 'react';
 import { useAppDispatch, useAppState } from '../state';
 import { runFeasibility } from '../engine/feasibility';
+import { loadSiteData } from '../siteData';
 import type { FeasibilityResult, SiteInput } from '../engine/types';
 
 type Reply = { id: number; result?: FeasibilityResult; error?: string };
@@ -13,7 +14,6 @@ export function useEngine() {
   const dispatch = useAppDispatch();
   const workerRef = useRef<Worker | null>(null);
   const reqId = useRef(0);
-  const firstRun = useRef(true);
 
   useEffect(() => {
     try {
@@ -42,11 +42,7 @@ export function useEngine() {
   }, [dispatch]);
 
   useEffect(() => {
-    if (firstRun.current) {
-      // initial result is computed synchronously in initialState
-      firstRun.current = false;
-      if (state.result) return;
-    }
+    // (the initial synchronous result has no zoning/station data; always recompute through the worker)
     if (state.polygon.length < 3) {
       dispatch({ type: 'SET_RESULT', result: null });
       return;
@@ -56,23 +52,26 @@ export function useEngine() {
       roadEdges: state.roadEdges,
       buildingType: state.buildingType,
       nearTransitDeclared: state.nearTransitDeclared,
+      avgUnitSizeSqm: state.avgUnitSizeSqm,
+      parkingMode: state.parkingMode,
     };
     const id = ++reqId.current;
     dispatch({ type: 'COMPUTING' });
     if (workerRef.current) {
       workerRef.current.postMessage({ id, input });
     } else {
-      const t = setTimeout(() => {
-        if (id !== reqId.current) return;
+      let cancelled = false;
+      loadSiteData().catch(() => ({})).then((data) => {
+        if (cancelled || id !== reqId.current) return;
         try {
-          dispatch({ type: 'SET_RESULT', result: runFeasibility(input) });
+          dispatch({ type: 'SET_RESULT', result: runFeasibility(input, data) });
         } catch (err) {
           console.error('Engine error:', err);
           dispatch({ type: 'SET_RESULT', result: null });
         }
-      }, 0);
-      return () => clearTimeout(t);
+      });
+      return () => { cancelled = true; };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.polygon, state.roadEdges, state.buildingType, state.nearTransitDeclared, dispatch]);
+  }, [state.polygon, state.roadEdges, state.buildingType, state.nearTransitDeclared, state.avgUnitSizeSqm, state.parkingMode, dispatch]);
 }

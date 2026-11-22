@@ -52,8 +52,29 @@ export const SOURCES = {
     id: 'BKK_BCO_2544',
     title: 'Bangkok Building Control Ordinance B.E. 2544 (2001)',
     titleTh: 'ข้อบัญญัติกรุงเทพมหานคร เรื่อง ควบคุมอาคาร พ.ศ. ๒๕๔๔',
-    url: 'https://bmc.go.th/wp-content/uploads/2020/05/169.pdf',
-    verification: 'NOT verified: the official copy is a scanned image without a text layer. Any stricter Bangkok-specific provisions are not modelled.',
+    url: 'https://download.asa.or.th/03media/04law/cba/bb/bb44-03.pdf',
+    verification: 'Clauses 49–55 (building lines, open space, distances) and 83–90 (parking) read from the ASA text-layer copy. The official BMC copy (bmc.go.th/wp-content/uploads/2020/05/169.pdf) is a scanned image. The ASA copy shows no amendments to the ordinance; later amendments, if any, are not verified.',
+  },
+  MR7: {
+    id: 'MR7',
+    title: 'Ministerial Regulation No. 7 B.E. 2517 (1974) on parking, as amended by No. 41 (1994) and No. 64 (2012)',
+    titleTh: 'กฎกระทรวง ฉบับที่ ๗ (พ.ศ. ๒๕๑๗) แก้ไขโดยฉบับที่ ๔๑ และ ๖๔',
+    url: 'https://download.asa.or.th/03media/04law/cba/mr/mr17-07-upd64.pdf',
+    verification: 'Clause 3(1) (Bangkok rates) read from the ASA consolidated text; rates for condominiums, offices and large buildings equal BMA 2544 Cl. 84.',
+  },
+  BMA_ZONING_GIS: {
+    id: 'BMA_ZONING_GIS',
+    title: 'BMA City Planning Dept. GIS layer "ผังเมืองรวม 2556" (ArcGIS service DOL/LupDolWms, layer 1)',
+    titleTh: 'ชั้นข้อมูลผังเมืองรวมกรุงเทพมหานคร พ.ศ. ๒๕๕๖ (สำนักการวางผังและพัฒนาเมือง)',
+    url: 'http://3d-cpd.bangkok.go.th/ArcGIS/rest/services/DOL/LupDolWms/MapServer/1',
+    verification: 'Bundled as public/data/bkk-zoning-2556.geojson from a converted export of this service (github.com/Kanesuan/KNS.MAP). Per-zone polygon counts match the Gazette for 20 zones, incl. ย.9 = 30 areas. The service is geo-blocked from here; scripts/ingest/bma-zoning.mjs re-ingests it directly where reachable.',
+  },
+  OSM_STATIONS: {
+    id: 'OSM_STATIONS',
+    title: 'OpenStreetMap mass-transit stations (BTS, MRT, ARL, SRT Red, Gold, monorails)',
+    titleTh: 'ตำแหน่งสถานีรถไฟฟ้าขนส่งมวลชน (OpenStreetMap)',
+    url: 'https://www.openstreetmap.org/copyright',
+    verification: 'public/data/bkk-rail-stations.geojson, extracted with scripts/ingest/osm-stations.mjs. © OpenStreetMap contributors, ODbL 1.0. Station points are indicative (±30 m).',
   },
 } satisfies Record<string, LegalSource>;
 
@@ -137,13 +158,81 @@ export const EIA = {
 } as const;
 
 /** Explicit modelling assumptions (shown in the report) */
+// ── Bangkok Building Control Ordinance B.E. 2544 ──
+export const BMA2544 = {
+  /** Cl. 52(1)/(2): open space ≥ 30 % (residential) / 10 % (other; residential use → 30 %) of the LAND area */
+  openSpaceResidential: 0.3,
+  openSpaceNonResidential: 0.1,
+  /** Cl. 52(6): buildings > 2 storeys or > 8 m (and commercial): front open space ≥ 6 m wide; > 3 storeys ≥ 12 m,
+   *  contiguous length ≥ 1/6 of the building's external perimeter */
+  frontSpaceLowM: 6,
+  frontSpaceHighM: 12,
+  frontSpaceHighFromStoreys: 4,
+  frontSpacePerimeterFraction: 1 / 6,
+  /** Cl. 53: exempt from 52(6) if the face on the public road is > 1/8 of the perimeter and ≤ 20 m from the road */
+  roadFacePerimeterFraction: 1 / 8,
+  roadFaceMaxDistanceM: 20,
+  /** Cl. 54: openings ≥ 2 m from private land up to the 2nd storey / 9 m; ≥ 3 m from the 3rd storey or above 9 m */
+  openingLowM: 2,
+  openingUpperM: 3,
+  openingUpperFromStoreyIndex: 2,
+  /** Cl. 55: ≥ 1 m clear around buildings ≤ 15 m; ≥ 2 m above 15 m */
+  aroundLowM: 1,
+  aroundHighM: 2,
+  aroundThresholdM: 15,
+  /** Cl. 51: corner splay 4 m at corners of public roads 3–8 m wide with an angle < 135° */
+  splayM: 4,
+  splayRoadMinM: 3,
+  splayRoadMaxM: 8,
+  splayMaxAngleDeg: 135,
+  /** Definition (101) "อาคารขนาดใหญ่": floor area > 2,000 m², or height ≥ 15 m and floor area > 1,000 m² */
+  largeBuildingAreaSqm: 2000,
+  largeBuildingHeightM: 15,
+  largeBuildingAreaIfTallSqm: 1000,
+  /** Cl. 90: ≥ 15 parking spaces → access must connect to a public road ≥ 6 m wide */
+  parkingAccessSpaces: 15,
+  parkingAccessRoadM: 6,
+} as const;
+
+// ── Parking: BMA 2544 Cl. 83–88 and MR 7 Cl. 3(1) (identical Bangkok rates for these uses) ──
+export const PARKING = {
+  /** Cl. 83(3) / MR 7 Cl. 2(3): condos need parking when each unit is ≥ 60 m²; Cl. 84(3): 1 space per unit */
+  condoUnitThresholdSqm: 60,
+  spacesPerCondoUnit: 1,
+  /** Cl. 84(6): office 1 space / 60 m² (applies from 300 m² of office space, Cl. 83(6)) */
+  officeSqmPerSpace: 60,
+  /** Cl. 84(18): commercial building 1 space / 60 m² (from 300 m², Cl. 83(18)) */
+  commercialSqmPerSpace: 60,
+  useThresholdSqm: 300,
+  /** Cl. 84(16): large building 1 space / 120 m² of building area, or the sum by use, whichever is greater */
+  largeBuildingSqmPerSpace: 120,
+  /** Cl. 86: 90° bay 2.40 × 5.00 m; Cl. 88: aisle ≥ 6 m for angles > 60° */
+  bayWidthM: 2.4,
+  bayLengthM: 5,
+  aisleM: 6,
+  /** Design assumption: gross parking floor area per space incl. aisles, ramps, cores (net double-loaded = 19.2 m²) */
+  grossSqmPerSpace: 28,
+  /** Floor plates narrower than this cannot take a double-loaded aisle (5 + 6 + 5 m) */
+  minWidthDoubleLoadedM: 16,
+  /** Single-loaded (5 + 6 m) */
+  minWidthSingleLoadedM: 11,
+  singleLoadedGrossSqmPerSpace: 36,
+} as const;
+
+export const DEFAULT_AVG_UNIT_SIZE_SQM = 35;
+export const NET_TO_GROSS_RESIDENTIAL = 0.7;
+/** Zone boundary precision margin: plots closer than this to the GIS zone boundary are reported UNVERIFIED */
+export const ZONE_BOUNDARY_MARGIN_M = 10;
+
+/** Explicit modelling assumptions (shown in the report) */
 export const ASSUMPTIONS = [
-  'The zone is user-declared as ย.9. No official machine-readable zoning boundary is published for the 2013 plan; the plot is not verified against the official map.',
+  'The zone is read from the BMA GIS layer of the 2013 plan (bundled copy, validated against the Gazette). The legally binding map is the one annexed to the regulation; obtain a BMA land-use certificate before permit applications. Plots within 10 m of a zone boundary are reported UNVERIFIED.',
   'Each road-facing plot edge is assumed to coincide with the public-road boundary (เขตถนน); the road centreline is assumed at half the entered road width.',
-  'Road widths are user-entered right-of-way widths (เขตทาง). OpenStreetMap is not a cadastral source.',
-  'All walls are assumed to have openings (windows/balconies), so MR 55 Clause 50 distances apply on every boundary.',
+  'Road widths and access-route widths estimated from OpenStreetMap geometry are estimates, not cadastral or BMA right-of-way data. Checks that depend on them are flagged "estimated input"; enter surveyed widths (title deed / BMA) to replace them.',
+  'All walls are assumed to have openings (windows/balconies), so the MR 55 Cl. 50 and BMA 2544 Cl. 54 distances apply on every boundary.',
   'Building height is measured to the roof deck of the top floor (MR 33 Clause 1); parapets and rooftop structures are not modelled.',
-  'Every modelled storey is counted in total floor area for FAR. Basements, parking exclusions and FAR bonuses (Plan Clauses 52–56) are not modelled.',
-  'Units are estimated as residential GFA × 0.70 net-to-gross ÷ 35 m² per unit. EIA usable area is approximated by residential GFA (upper bound).',
-  'The Bangkok Building Control Ordinance B.E. 2544 may add stricter requirements. It could not be text-verified and is not modelled.',
+  'Every storey, including parking and basement storeys, counts in total floor area for FAR and the MR 33 thresholds (Plan Cl. 4 "all storeys"; Plan Cl. 54 confirms parking normally counts). FAR bonuses (Plan Clauses 52–56) are not modelled.',
+  'Units = residential floor area × 0.70 ÷ the average unit size entered. EIA usable area is approximated by residential floor area (upper bound).',
+  'Parking: 28 m² gross per space (2.40 × 5.00 m bay + share of 6 m aisle, ramps and cores). The large-building rate (1 space / 120 m² of building area) is applied literally, i.e. the base includes the parking floors themselves (conservative; some practitioners exclude parking area).',
+  'Station proximity is measured from OpenStreetMap station points; the plot qualifies only when its farthest point is within 500 m (conservative reading of "ภายในระยะ 500 เมตร").',
 ] as const;

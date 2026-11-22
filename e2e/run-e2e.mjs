@@ -128,19 +128,25 @@ try {
   });
   log('OSM buildings inside the plot are hidden', inside === 0, `${inside} context buildings still rendered inside the plot`);
 
-  // road frontage via edge label + per-edge widths
-  await page.click('[data-testid="edge-label-0"]');
-  await waitIdle();
+  // the map-based road analysis runs once the plot exists (auto-detects frontages on a new plot)
+  await page.waitForFunction(() => !window.__BKK__.state.autoRoadsPending, null, { timeout: 20000 }).catch(() => {});
+  s = await S();
+  log('road analysis ran for the drawn plot', await page.evaluate(() => !!window.__BKK__.state.roadAnalysis), `auto-detected roads: ${JSON.stringify(s.roads.map((r) => `E${r.edgeIndex + 1}:${r.widthM}m ${r.source}`))}`);
+  // make edges 0 and 1 the road frontages with surveyed widths (toggle via the map labels where needed)
+  for (const i of [0, 1]) {
+    const has = await page.evaluate((i) => window.__BKK__.state.roadEdges.some((r) => r.edgeIndex === i), i);
+    if (!has) { await page.click(`[data-testid="edge-label-${i}"]`); await waitIdle(); }
+  }
+  for (const r of (await S()).roads) if (r.edgeIndex > 1) { await page.click(`[data-testid="edge-label-${r.edgeIndex}"]`); await waitIdle(); }
   const gNoWidth = (await S()).gfa;
   await page.fill('[data-testid="road-width-input-0"]', '18');
-  await waitIdle();
-  await page.click('[data-testid="edge-label-1"]');
   await waitIdle();
   await page.fill('[data-testid="road-width-input-1"]', '12');
   await waitIdle();
   s = await S();
   const noReload = await page.evaluate(() => window.__noReloadMarker === 42);
-  log('two road edges with independent widths (18 m + 12 m) update live without reload', JSON.stringify(s.roads) === JSON.stringify([{ edgeIndex: 0, widthM: 18 }, { edgeIndex: 1, widthM: 12 }]) && noReload, `roads=${JSON.stringify(s.roads)}, gfa ${gNoWidth} → ${s.gfa}`);
+  const widths = s.roads.map((r) => `${r.edgeIndex}:${r.widthM}:${r.source}`).join(',');
+  log('two road edges with independent surveyed widths (18 m + 12 m) update live without reload', widths === '0:18:user,1:12:user' && noReload, `roads=${widths}, gfa ${gNoWidth} → ${s.gfa}`);
 
   // road-width timing (input → result)
   const sb = () => page.evaluate(() => window.__BKK__.state.result.designA.envelope.setbacks[0].distanceM);
@@ -169,12 +175,20 @@ try {
   const after = (await S()).gfa;
   log('dragging a vertex reshapes the plot and recomputes', poly0[0] !== poly1[0] && before !== after, `gfa ${before} → ${after}`);
 
-  // ── Corner preset 18 + 12 ──
-  await page.click('[data-testid="preset-corner-18m-12m"]');
+  // ── Corner preset (Ekkamai road + lane, inside ย.9) ──
+  await page.click('[data-testid="preset-ekkamai-corner"]');
   await waitIdle();
-  await sleep(1200);
+  await sleep(1500);
+  await waitIdle();
   s = await S();
-  log('corner preset loads per-edge widths', s.roads.map((r) => r.widthM).sort().join(',') === '12,18', JSON.stringify(s.roads));
+  log('corner preset loads two map-estimated frontages', s.roads.length === 2 && s.roads.every((r) => r.source === 'map-estimate'), JSON.stringify(s.roads));
+  const zone = await page.evaluate(() => { const j = window.__BKK__.state.result.jurisdiction; return { status: j.status, zone: j.zone, margin: j.boundaryMarginM }; });
+  log('zone detected automatically from the BMA GIS layer', zone.status === 'PASS' && zone.zone === 'ย.9', `${zone.zone} ${zone.status}, ${Math.round(zone.margin)} m from boundary`);
+  const transit = await page.evaluate(() => { const t = window.__BKK__.state.result.transit; return { src: t.source, n: t.nearest?.nameEn, d: t.nearest?.minDistanceM }; });
+  log('nearest mass-transit station computed', transit.src === 'station-data' && !!transit.n, `${transit.n}, ${Math.round(transit.d)} m`);
+  const zoningLayer = await page.evaluate(() => window.__map__.queryRenderedFeatures({ layers: ['zoning-fill'] }).length);
+  log('zoning overlay rendered on the map', zoningLayer > 0, `${zoningLayer} zone features in view`);
+  await page.screenshot({ path: `${SHOTS}/1-site-preset.png` });
 
   // ── Building stage ──
   await page.click('[data-testid="stage-building"]');
@@ -245,6 +259,17 @@ try {
   s = await S();
   log('switching design in floor stage updates floors', s.activeDesign === 'b', `B floors=${s.floors}`);
 
+  // ── Parking mode: basements ──
+  await page.click('[data-testid="stage-site"]');
+  await page.selectOption('[data-testid="parking-mode"]', 'basement');
+  await waitIdle();
+  const bm = await page.evaluate(() => { const d = window.__BKK__.state.result.designA; return { b: d.basementFloors.length, p: d.floors.filter((f) => f.use === 'parking').length, req: d.parking.requiredSpaces, prov: d.parking.providedSpaces }; });
+  log('parking mode → basement levels replace podium parking', bm.b > 0 && bm.p === 0 && bm.prov >= bm.req, `${bm.b} basement level(s), ${bm.prov}/${bm.req} spaces`);
+  await page.selectOption('[data-testid="parking-mode"]', 'podium');
+  await waitIdle();
+  await page.click('[data-testid="stage-floor"]');
+  await sleep(400);
+
   // ── Compliance stage ──
   await page.click('[data-testid="stage-compliance"]');
   await sleep(500);
@@ -255,7 +280,8 @@ try {
   const statuses = await page.$$eval('[data-testid^="check-"][data-status]', (els) => els.map((e) => e.getAttribute('data-status')));
   log('hovering a rule highlights it in 3D', s.hovered === 'sky-plane', `hovered=${s.hovered}`);
   const unv = statuses.filter((x) => x === 'UNVERIFIED').length;
-  log('checklist shows PASS/FAIL/UNVERIFIED states; jurisdiction never PASS', unv > 0 && statuses.length > 15, `${statuses.length} checks: ${['PASS', 'FAIL', 'UNVERIFIED', 'INFO', 'N/A'].map((k) => `${k}=${statuses.filter((x) => x === k).length}`).join(' ')}`);
+  const zoneStatus = await page.getAttribute('[data-testid="check-zoning-jurisdiction"]', 'data-status');
+  log('checklist lists every rule with a status; zone PASS from the GIS layer for this ย.9 preset', zoneStatus === 'PASS' && statuses.length > 20 && unv >= 0, `${statuses.length} checks: ${['PASS', 'FAIL', 'UNVERIFIED', 'INFO', 'N/A'].map((k) => `${k}=${statuses.filter((x) => x === k).length}`).join(' ')}`);
   await page.click('[data-testid="check-road-setback-0"] button');
   await page.mouse.move(box.x + 300, box.y + 300);
   await sleep(500);
@@ -264,6 +290,8 @@ try {
   await sleep(300);
   const bStatuses = await page.$$eval('[data-testid^="check-"][data-status]', (els) => els.length);
   log('Design B has its own independent checklist', bStatuses > 15 && (await S()).activeDesign === 'b', `${bStatuses} checks`);
+  const estBadges = await page.$$eval('[data-testid^="est-"]', (els) => els.length);
+  log('checks that rely on map-estimated widths carry an EST. INPUT badge', estBadges > 0, `${estBadges} badges`);
 
   // ── Report stage ──
   await page.click('[data-testid="stage-report"]');
@@ -290,7 +318,7 @@ try {
   const mem = await page.evaluate(async () => {
     const used = async () => { for (let i = 0; i < 3; i++) { window.gc?.(); await new Promise((r) => setTimeout(r, 200)); } return performance.memory ? performance.memory.usedJSHeapSize / 1048576 : NaN; };
     const d = window.__BKK__.dispatch;
-    const ids = ['l-shape-soi-8m', 'trapezoid-12m', 'corner-18m-12m'];
+    const ids = ['thonglor-soi-l', 'thonglor-trapezoid', 'ekkamai-corner'];
     const wait = () => new Promise((r) => { const c = () => (window.__BKK__.state.computing ? setTimeout(c, 30) : r()); setTimeout(c, 30); });
     const cycle = async (n) => { for (let i = 0; i < n; i++) { d({ type: 'SET_PRESET', presetId: ids[i % 3] }); d({ type: 'SET_STAGE', stage: i % 2 ? 'building' : 'site' }); await wait(); await new Promise((r) => setTimeout(r, 120)); } };
     await cycle(6); // warm-up (tile caches, JIT)
@@ -312,7 +340,8 @@ try {
     const st = window.__BKK__.state; await new Promise((r) => setTimeout(r, 3000)); m.off('render', f);
     return { renders: n, stateChanged: window.__BKK__.state !== st };
   });
-  log('idle app does no work (no render loop, no state churn)', !settled && !quiet.stateChanged ? null : quiet.renders < 10 && !quiet.stateChanged, `${quiet.renders} map renders in 3 s idle (tiles settled: ${settled})`);
+  // renders while tiles are still streaming from the external server can't be attributed to the app → inconclusive
+  log('idle app does no work (no render loop, no state churn)', quiet.renders < 10 && !quiet.stateChanged ? true : !settled && !quiet.stateChanged ? null : false, `${quiet.renders} map renders in 3 s idle (tiles settled: ${settled})`);
   log('no console errors', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
 } catch (err) {
   log('e2e run aborted', false, String(err?.stack ?? err));
@@ -322,7 +351,8 @@ try {
   await page.close().catch(() => {});
   await browser.close().catch(() => {});
   server.kill();
-  const failed = results.filter((r) => !r.ok).length;
-  console.log(`\n${results.length - failed}/${results.length} browser checks passed`);
+  const failed = results.filter((r) => r.ok === false).length;
+  const inconclusive = results.filter((r) => r.ok === null).length;
+  console.log(`\n${results.length - failed - inconclusive}/${results.length} browser checks passed${inconclusive ? `, ${inconclusive} inconclusive (external tile server still loading)` : ''}${failed ? `, ${failed} FAILED` : ''}`);
   process.exit(failed ? 1 : 0);
 }
