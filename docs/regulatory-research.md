@@ -41,8 +41,8 @@ Verification levels used below:
 **Boundary.** The plan divides ย.9 into 30 separate areas (ย.9-1 … ย.9-30) shown on the annexed land-use map. The BMA City Planning Department publishes the plan as a GIS layer on a public ArcGIS 10.0 service (`3d-cpd.bangkok.go.th/ArcGIS/rest/services/DOL/LupDolWms/MapServer/1`, field `ZONE`). That host does not respond from outside Thailand. A converted export of the layer (498 polygons) exists in a public GitHub project ([Kanesuan/KNS.MAP](https://github.com/Kanesuan/KNS.MAP), PR #6), made from GitHub Actions runners that can reach the service. Before bundling it, I checked it independently against the Gazette: **all 20 zone counts legible in the Gazette text match exactly** (ย.9 = 30 areas, ย.8 = 26, ย.7 = 30, พ.3 = 43, ก.4 = 38, …). Details and refresh procedure: `docs/data-sources.md`.
 
 How the tool uses it (section 9): the plot's *area* is overlaid on every zone polygon, not just its vertices. Results:
-- **PASS** when 100 % of the plot is in ย.9 and ≥ 10 m from any zone boundary;
-- **UNVERIFIED** within 10 m of a boundary (GIS precision);
+- **PASS** when ≥ 99.9 % of the plot (by area) is in ย.9 and its boundary is ≥ 10 m from any zone boundary;
+- **UNVERIFIED** within 10 m of a boundary (GIS precision), or when the plot lies outside every zone polygon (unzoned land is not in the layer);
 - **FAIL** when the plot is in another zone or straddles zones.
 
 The legally binding map is still the one annexed to the regulation, so a BMA land-use certificate is still needed for a permit.
@@ -132,7 +132,7 @@ The engine now checks every vertex of every storey at its roof level.
 - Clause 45: two parallel roads ≤ 60 m apart, with the building ≤ 60 m wide along the wider road. The wider road's opposite boundary governs.
 - Clause 46: a corner of two unequal roads. The wider road governs, provided the building is ≤ 60 m long along the narrower road (15 m for shophouses).
 
-The engine grants this relief only when the condition holds for the whole buildable area. Otherwise every road's plane applies, which is equivalent to Clause 44's nearest-road rule. Example: the 18 m + 12 m corner preset is about 78 m long on the 12 m side (66 m of buildable length), so relief does not apply and both planes are active. A 50 × 50 m corner plot gets relief.
+The engine grants this relief only when the condition holds for the whole buildable area. Otherwise every road's plane applies, which is equivalent to Clause 44's nearest-road rule. Example: the Ekkamai corner preset (≈ 20 m road + ≈ 7 m lane) is about 52 m long on the lane (40 m of buildable length after the 6 m MR 33 setbacks), so relief applies: the lane's plane is inactive and the 20 m road governs. A corner plot whose buildable length along the narrower road exceeds 60 m gets no relief, and both planes apply.
 
 **Clause 40.** No part of a building may project into public space. Together with Clause 41, this is why a drawn plot crossing an OSM road centreline is flagged.
 
@@ -151,7 +151,7 @@ Source: the 2018 (B.E. 2561) annex, [university-hosted copy](https://rsdi.kku.ac
 Corrections to the old implementation:
 - **Height ≥ 23 m does not by itself trigger an EIA for a condominium** (the old code did). The 4,000 m² usable-area test does. Almost any FAR-7 condo needs an EIA.
 - An EIA is a permitting step, not a design limit, so the tool reports it as INFO. Design B is no longer built around a "79-unit" cap.
-- The units estimate (residential floor area × 0.70 ÷ 35 m²) and the usable-area proxy (= residential floor area) are labelled estimates. I did not find the notification's own definition of "พื้นที่ใช้สอย".
+- The units estimate (residential floor area × 0.70 ÷ the average unit size, default 35 m², set in the Site stage) and the usable-area proxy (= residential floor area) are labelled estimates. I did not find the notification's own definition of "พื้นที่ใช้สอย".
 
 ## 7. Not modelled or unverified
 

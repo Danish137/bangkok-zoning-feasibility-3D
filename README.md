@@ -12,7 +12,7 @@ A browser tool that answers a developer's first question about a Bangkok plot: *
 
 ## Features
 
-- **Any plot shape.** Draw rectangles, trapezoids or concave and irregular polygons. Vertex markers and the live preview appear on the first click. Undo, cancel, finish, close-on-first-point, draggable vertices, self-intersection prevention and live area are all supported.
+- **Any plot shape.** Draw rectangles, trapezoids or concave and irregular polygons. Vertex markers and the live preview appear on the first click. Undo, cancel, finish, close-on-first-point, draggable vertices, self-intersection prevention and live area are all supported. Three presets inside ย.9 (an L-shaped plot on a Thong Lo side soi, a trapezoid on Thong Lo road, a corner on Ekkamai road) load a test site in one click.
 - **Real site context.** OpenStreetMap buildings in 3D via OpenFreeMap. Buildings inside the plot are hidden, and plots crossing mapped roads get a warning.
 - **Automatic zone and transit detection.** The plot's area is overlaid on the BMA GIS layer of the 2013 plan (498 zones, validated against the Gazette). Plots in another zone, straddling zones, or within 10 m of a zone boundary are flagged. Distances to 225 BTS / MRT / ARL / SRT Red / Gold / monorail stations are computed for the Plan's 500 m conditions.
 - **Automatic road frontage and widths.** Road-facing edges are detected from OpenStreetMap centrelines. Reserve widths are estimated (centreline offset, facade clearance, road class), and the narrowest point on the route to the nearest arterial is traced for MR 33 continuity. All map values are labelled **EST.** and can be replaced with surveyed widths.
@@ -23,7 +23,8 @@ A browser tool that answers a developer's first question about a Bangkok plot: *
   - Ministerial Regulation 33: high-rise / extra-large thresholds, road width and continuity, 6 m setbacks, open space;
   - MR 7: parking;
   - EIA thresholds, as information only.
-- **Parking.** Required spaces under BMA 2544 Cl. 83–85 (1 per unit ≥ 60 m², 1 / 60 m² office or retail, 1 / 120 m² for large buildings), placed in podium storeys or basements. Parking counts in FAR.
+- **Parking.** Required spaces under BMA 2544 Cl. 83–85 (1 per unit ≥ 60 m², 1 / 60 m² office or retail, 1 / 120 m² for large buildings), placed in podium storeys or basements. Parking counts in FAR. The Site stage takes the average unit size (default 35 m²) and the parking mode (podium or basement).
+- **Site stage at a glance.** A zone card (detected zone, the share of the plot in each zone, distance to the nearest zone boundary), a transit card (nearest station, and whether all, part or none of the plot lies within 500 m), and per-edge road widths, each with its source (EST. or surveyed) and the narrowest width on the access route.
 - **Two designs.**
   - *A · Maximum Yield* gives the most legal floor area and explains what limits it.
   - *B · Open Space Optimised* uses at most about 60 % of A's footprint and recovers floor area with height where the road allows.
@@ -50,11 +51,11 @@ npm run dev        # http://localhost:5173
 | Command | What it does |
 |---|---|
 | `npm run dev` | Vite dev server |
-| `npm test` | Vitest: geometry, regulatory reference cases, design invariants, state machine, API |
+| `npm test` | Vitest (141 tests): geometry, regulatory reference cases, Bangkok data and BMA 2544 cases, road analysis, design invariants, state machine, API |
 | `npm run lint` | TypeScript checks for the app and the Cloudflare Function |
 | `npm run build` | Typecheck + production build to `dist/` |
 | `npm run preview` | Serve the production build locally |
-| `npm run e2e` | Browser checks against the production build (needs `npm run build` and Microsoft Edge installed) |
+| `npm run e2e` | 33 browser checks against the production build (needs `npm run build` and Microsoft Edge installed); screenshots and results go to `docs/screenshots/` |
 
 To run the site and the API together in Cloudflare's local runtime: `npm run build && npx wrangler pages dev dist`.
 
@@ -124,11 +125,23 @@ docs/              regulatory research, audit findings, architecture, decisions,
 - **Plan version.** The 2013 plan is still operative. Its 4th revision (in public posting until 9 Nov 2026) is expected to change ย.9 values, so re-run the analysis once it is promulgated.
 - **Bangkok Building Control Ordinance B.E. 2544:** the massing-relevant clauses (49–55, 83–90) were read from a text-layer copy and are implemented. Later amendments, if any, are not verified. The detailed-design chapters (structure, fire, sanitation) are out of scope.
 - **EIA thresholds** were read from the 2018 notification. Their carry-over into the in-force 2023 notification is assumed, not verified. Unit counts and usable area are estimates. The EIA result is information, not a design limit.
-- **Road widths are user inputs** and plot edges are assumed to be road boundaries. OpenStreetMap is navigation data, not a cadastral survey. Presets are synthetic test parcels, not surveyed title deeds.
+- **Plot edges marked as roads are taken to be the legal road boundary.** Auto-detected frontages are a starting point: OpenStreetMap is navigation data, not a cadastral survey, so confirm which edges actually abut a public road. The three presets (Thong Lo side soi, Thong Lo road, Ekkamai corner) are synthetic parcels placed inside ย.9, not surveyed title deeds.
 - **Parking area** uses 28 m² gross per space. The large-building rate is applied literally, with parking floors included in the base (conservative).
 - **Not modelled:** FAR bonuses (Plan Cl. 52–56), mechanical parking, parapets and rooftop structures, permeable-surface layout, detailed fire and structural requirements, and the draft 4th-revision plan (no GIS layer published).
 - **Assumption:** all walls are treated as having openings, so the window setbacks apply to every boundary.
 
-The clause text, calculations, sources and verification status are in [`docs/regulatory-research.md`](docs/regulatory-research.md). The audit trail is in [`docs/audit-findings.md`](docs/audit-findings.md).
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/regulatory-research.md`](docs/regulatory-research.md) | Clause text, calculations, sources and verification status |
+| [`docs/rules-spec.md`](docs/rules-spec.md) | Every rule as implemented, with formulas |
+| [`docs/data-sources.md`](docs/data-sources.md) | Bundled zoning and station data: provenance, licence, validation, refresh |
+| [`docs/architecture.md`](docs/architecture.md) | Modules and data flow |
+| [`docs/decisions.md`](docs/decisions.md) | Design decisions and their trade-offs |
+| [`docs/audit-findings.md`](docs/audit-findings.md) | Audit trail: defects found and how they were fixed |
+| [`docs/progress.md`](docs/progress.md) | What is implemented and how it is verified |
+
+## Attribution
 
 Map data and station data © OpenStreetMap contributors (ODbL), tiles by OpenFreeMap. Zoning: BMA City Planning and Urban Development Department, 2013 plan GIS layer. The fallback basemap is © CARTO.
